@@ -23,7 +23,13 @@ env/
 .pytest_cache/
 .coverage
 .coverage.*
+coverage.xml
 htmlcov/
+.tox/
+
+# Project/runtime caches
+.cache/
+Settings/Cache Data/
 
 # Type checking and linting
 .mypy_cache/
@@ -37,3 +43,7 @@ htmlcov/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Test output
+tests/
+test.yml

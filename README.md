@@ -4,11 +4,9 @@
 
 ## Status
 
-Version `0.1.0` is the package metadata version. This README describes the implementation currently in this repository. It is not a claim that every optional external service, database driver, or spaCy model is available in a fresh environment.
+Version `0.1.1` is the project version declared in `pyproject.toml`.
 
 ## Installation
-
-The package metadata declares the runtime libraries imported by the cleaning module:
 
 ```bash
 python -m pip install bynat
@@ -22,13 +20,26 @@ python -m pip install -e .
 
 ### Requirements
 
-- Python `>=3.11`. The source imports `typing.Self`, which is not available from `typing` on Python 3.10.
-- Runtime distributions declared by `pyproject.toml`: `Caching` (the local distribution providing `from Caching import CacheManager`), the conventional distribution mapping `pyahocorasick` for the `ahocorasick` import, plus `Babel`, `deep-translator`, `geopy`, `langdetect`, `numpy`, `pandas`, `pycountry`, `spacy`, `SQLAlchemy`, and `yfinance`.
-- Distribution-name and version uncertainty remains for dependencies absent from the offline environment. In particular, the `ahocorasick` → `pyahocorasick` mapping could not be verified from local installed metadata; confirm it before publishing. Versions are intentionally unpinned because the repository contains no tested version constraints. `numpy` and `pandas` were present locally (`2.5.3` and `3.0.6`), but that is not a compatibility guarantee.
-- `extract_entities_nlp` also needs a separately installed spaCy language model, defaulting to `en_core_web_sm`; the model is not a Python dependency declared by this project.
-- `save_to_sql` additionally needs the DBAPI driver required by the SQLAlchemy URL you use, such as a PostgreSQL, MySQL, or SQL Server driver. No database driver is bundled.
+- Python `>=3.11`.
+- Mandatory runtime distributions: `numpy` and `pandas`.
+- Optional integrations are grouped in `pyproject.toml`:
+  - `translation`: `deep-translator`, `langdetect`
+  - `geocoding`: `geopy`
+  - `currency`: `Babel`, `pycountry`, `yfinance`
+  - `categorization`: `pyahocorasick` for the `ahocorasick` import
+  - `nlp`: `spacy`
+  - `sql`: `SQLAlchemy`
 
-`Cleaning.py` imports `CacheManager` with the absolute top-level statement `from Caching import CacheManager`. Therefore `Caching` is a mandatory runtime dependency, not an optional cache extra. The adjacent local cache package declares distribution name `Caching` (version `0.1.0`); `bynat` does not bundle that top-level module, so a compatible `Caching` distribution must be installed separately. The import style was not changed because this task is limited to package metadata and documentation.
+Install an integration group when needed, for example:
+
+```bash
+python -m pip install "bynat[translation]"
+```
+
+These integrations are imported only when their methods are used. Basic imports and core dataframe operations do not require them. Calling a method that needs a missing integration raises an `ImportError` naming the required optional dependency. The `pyahocorasick` distribution-to-`ahocorasick` import mapping was not verifiable from the offline environment and should be confirmed before publishing.
+
+`extract_entities_nlp` also needs a compatible spaCy model, defaulting to `en_core_web_sm`. `save_to_sql` needs the DBAPI driver required by the SQLAlchemy URL. Neither model files nor database drivers are bundled.
+
 
 ## Public API
 
@@ -169,14 +180,24 @@ Most methods silently skip missing source/target columns and return the original
 
 ## Limitations and operational notes
 
-- Cleaning imports all third-party libraries at module import time, so even basic `BaseData` operations require the full declared dependency set to be importable.
-- The repository has no automated test suite. The implementation has been validated here only with static parsing, cache smoke checks, and available local tooling; network-backed methods were not exercised offline.
-- Translation uses `deep-translator` and may make external requests. Geocoding uses the public Nominatim service through `geopy` with a one-second rate limit. Currency conversion uses Yahoo Finance history through `yfinance`. These services can fail, rate-limit, or change results; cached values persist locally as JSON.
+- Optional integrations are lazy-loaded, so basic `bynat.cleaning` imports and core dataframe methods work with only `numpy` and `pandas`. Methods that need an absent integration raise a clear `ImportError` when called.
+- Translation uses `deep-translator` and may make external requests. Geocoding uses Nominatim through `geopy` with a one-second rate limit. Currency conversion uses Yahoo Finance history through `yfinance`. These services can fail, rate-limit, or change results; cached values persist locally as JSON.
 - NLP extraction requires a compatible spaCy model installed separately. A missing or unloadable model causes the method to print an error and fill requested output columns with empty lists.
 - `save_to_sql` catches database exceptions and prints an error instead of re-raising them. It also receives database credentials as ordinary arguments; do not hard-code secrets in application code.
 - Cache files are ordinary JSON and are not locked or transactionally written. Concurrent writers can overwrite each other, and values must be JSON serializable.
-- The implementation uses `print` for warnings/progress/errors rather than a logging interface.
+- The implementation uses `print` for warnings, progress, and errors rather than a logging interface.
 - The package's top-level namespace is intentionally empty; `from bynat import BaseData` is not supported by the current `__init__.py`.
+
+## Development and verification
+
+The repository test suite uses `pytest` and avoids network access, secrets, user files, optional integrations, and external services:
+
+```bash
+python -m pytest -q
+python -m compileall -q bynat
+```
+
+Building a wheel or source archive requires the configured setuptools build backend and wheel tooling. Those tools are not vendored in this repository; an offline environment must already have them installed. Generated `dist/` and `*.egg-info/` directories are not source-of-truth project files.
 
 ## License
 

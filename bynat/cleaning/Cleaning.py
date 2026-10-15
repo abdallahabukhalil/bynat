@@ -1,24 +1,25 @@
-import os
-import time
+import importlib
 import json
-import spacy
+import os
 import re
+import time
 import urllib.parse
-import pycountry
-import ahocorasick
+from typing import Callable, Optional, Self
+
 import numpy as np
 import pandas as pd
-import yfinance as yf
-from typing import Self, Optional, Callable
-from spacy.matcher import Matcher
-from sqlalchemy import create_engine
-from geopy.geocoders import Nominatim
-from deep_translator import GoogleTranslator
-from langdetect import detect, DetectorFactory
-from geopy.extra.rate_limiter import RateLimiter
-from babel.numbers import get_territory_currencies
 
-from Caching import CacheManager
+from bynat.caching import CacheManager
+
+
+def _import_optional(module_name: str, distribution: str, feature: str):
+    """Import a feature dependency only when the feature is used."""
+    try:
+        return importlib.import_module(module_name)
+    except ImportError as exc:
+        raise ImportError(
+            f"{feature} requires the optional '{distribution}' dependency."
+        ) from exc
 
 
 __all__ = ['BaseData', 'JsonFile', 'CsvFile']
@@ -1027,10 +1028,14 @@ class BaseData(pd.DataFrame):
                 df.impute_by_language("city_id", "city_name", target_lang="ar")
         ```
         """
-        DetectorFactory.seed = 0
-
         if reference_col not in self.columns:
             return self if not inplace else None
+
+        langdetect = _import_optional(
+            "langdetect", "langdetect", "impute_by_language"
+        )
+        langdetect.DetectorFactory.seed = 0
+        detect = langdetect.detect
 
         result = self.copy() if not inplace else self
 
@@ -1150,6 +1155,12 @@ class BaseData(pd.DataFrame):
         if not all(col in self.columns for col in required_cols):
             return self if not inplace else None
 
+        langdetect = _import_optional(
+            "langdetect", "langdetect", "translate_conditional_column"
+        )
+        langdetect.DetectorFactory.seed = 0
+        detect = langdetect.detect
+
         result = self.copy() if not inplace else self
 
         safe_partitions = []
@@ -1194,12 +1205,16 @@ class BaseData(pd.DataFrame):
         ]
 
         if values_to_translate:
-            cache_updated = False
-
             num_of_values = len(values_to_translate)
             print(f"preparing {num_of_values} values to be translated...")
 
-            translator = GoogleTranslator(source = 'auto', target = target_lang)
+            translator_module = _import_optional(
+                "deep_translator", "deep-translator", "translate_conditional_column"
+            )
+            translator = translator_module.GoogleTranslator(
+                source = 'auto', target = target_lang
+            )
+            cache_updated = False
 
             for i, val in enumerate(values_to_translate):
                 try:
@@ -1315,7 +1330,12 @@ class BaseData(pd.DataFrame):
         if values_to_translate:
             cache_updated = False
 
-            translator = GoogleTranslator(source = 'auto', target = target_lang)
+            translator_module = _import_optional(
+                "deep_translator", "deep-translator", "translate_categorical_column"
+            )
+            translator = translator_module.GoogleTranslator(
+                source = 'auto', target = target_lang
+            )
 
             num_of_values = len(values_to_translate)
 
@@ -1507,8 +1527,14 @@ class BaseData(pd.DataFrame):
             num_of_queries = len(queries_to_fetch)
             print(f"preparing {num_of_queries} locations to be geocoded...")
 
-            geolocator = Nominatim(user_agent = "data_cleaning_core_geocoder")
-            geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1)
+            geopy_geocoders = _import_optional(
+                "geopy.geocoders", "geopy", "fill_missing_coordinates"
+            )
+            geopy_rate_limiter = _import_optional(
+                "geopy.extra.rate_limiter", "geopy", "fill_missing_coordinates"
+            )
+            geolocator = geopy_geocoders.Nominatim(user_agent = "data_cleaning_core_geocoder")
+            geocode = geopy_rate_limiter.RateLimiter(geolocator.geocode, min_delay_seconds=1)
 
             for i, query in enumerate(queries_to_fetch):
                 try:
@@ -1618,6 +1644,12 @@ class BaseData(pd.DataFrame):
         if result.empty:
             return None if inplace else result
 
+        pycountry = _import_optional("pycountry", "pycountry", "convert_to_usd")
+        babel_numbers = _import_optional(
+            "babel.numbers", "Babel", "convert_to_usd"
+        )
+        yfinance = _import_optional("yfinance", "yfinance", "convert_to_usd")
+
         func_name = "convert_to_usd"
 
         currency_cache = self.cache_manager.get_column_cache(func_name, "currency_codes")
@@ -1645,7 +1677,7 @@ class BaseData(pd.DataFrame):
                     country_alpha2 = country.alpha_2
 
 
-                    currencies = get_territory_currencies(country_alpha2)
+                    currencies = babel_numbers.get_territory_currencies(country_alpha2)
 
                     if currencies:
                         curr_code = currencies[0]
@@ -1684,7 +1716,7 @@ class BaseData(pd.DataFrame):
                         try:
                             print(f"Fetching rate for {curr_code} in {y_str}...")
 
-                            ticker = yf.Ticker(f"{curr_code}=X")
+                            ticker = yfinance.Ticker(f"{curr_code}=X")
                             hist = ticker.history(start = f"{y_str}-01-01", end = f"{y_str}-12-31")
 
                             if not hist.empty:
@@ -2084,6 +2116,9 @@ class BaseData(pd.DataFrame):
 
             return None if inplace else result
 
+        ahocorasick = _import_optional(
+            "ahocorasick", "pyahocorasick", "categorize_by_reference"
+        )
         automaton = ahocorasick.Automaton()
 
         category_priority = {cat: idx for idx, cat in enumerate(reversed(list(reference.keys())))}
@@ -2330,6 +2365,10 @@ class BaseData(pd.DataFrame):
         ]
 
         if texts_to_process:
+            spacy = _import_optional("spacy", "spacy", "extract_entities_nlp")
+            matcher_module = _import_optional(
+                "spacy.matcher", "spacy", "extract_entities_nlp"
+            )
             print(f"Loading NLP Model and building Multi-Label Matcher...")
 
             if not isinstance(spacy_model, (str, os.PathLike)) or not os.fspath(spacy_model).strip():
@@ -2351,7 +2390,7 @@ class BaseData(pd.DataFrame):
 
                 return None if inplace else result
 
-            matcher = Matcher(nlp.vocab)
+            matcher = matcher_module.Matcher(nlp.vocab)
 
             for col_name, terms in term_dict.items():
                 all_patterns = []
@@ -2671,6 +2710,8 @@ class BaseData(pd.DataFrame):
 
             engine_url = f"{db_type}://{encoded_user}:{encoded_pass}@{db_host}:{db_port}/{db_name}"
 
+        sqlalchemy = _import_optional("sqlalchemy", "SQLAlchemy", "save_to_sql")
+
         try:
             export_df = self.copy()
 
@@ -2678,7 +2719,7 @@ class BaseData(pd.DataFrame):
             for col in export_df.select_dtypes(include = ['datetimetz']).columns:
                 export_df[col] = export_df[col].dt.tz_localize(None)
 
-            engine = create_engine(engine_url, **engine_kwargs)
+            engine = sqlalchemy.create_engine(engine_url, **engine_kwargs)
 
 
             print(f"Pushing data to SQL table '{table_name}' at {db_host}...")
