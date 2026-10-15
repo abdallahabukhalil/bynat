@@ -24,6 +24,15 @@ def _import_optional(module_name: str, distribution: str, feature: str):
 
 __all__ = ['BaseData', 'JsonFile', 'CsvFile']
 
+_HIERARCHICAL_STATS_COLUMNS = [
+    'hierarchy_level',
+    'hierarchy_columns',
+    'group_key',
+    'target_column',
+    'strategy',
+    'statistic',
+]
+
 
 
 class BaseData(pd.DataFrame):
@@ -2042,6 +2051,293 @@ class BaseData(pd.DataFrame):
                 current_group.pop()
 
         return None if inplace else result
+
+
+    @staticmethod
+    def _validate_hierarchical_stats_output_type(output_type) -> None:
+        """Validate a supported hierarchical-statistics output type."""
+        if output_type is None or output_type is dict or output_type is pd.DataFrame:
+            return
+
+        if isinstance(output_type, type) and issubclass(output_type, BaseData):
+            return
+
+        raise TypeError(
+            "output_type must be None, pandas.DataFrame, dict, or a "
+            "BaseData subclass."
+        )
+
+
+    @staticmethod
+    def _convert_hierarchical_stats_output(stats_df: pd.DataFrame, output_type):
+        """Convert a hierarchical-statistics dataframe to the requested type."""
+        if output_type is dict:
+            return {
+                column: stats_df[column].tolist()
+                for column in _HIERARCHICAL_STATS_COLUMNS
+            }
+
+        if output_type is pd.DataFrame:
+            return stats_df
+
+        try:
+            return output_type(data=stats_df)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(
+                f"output_type {output_type.__name__} could not be constructed "
+                "with data=stats_df."
+            ) from exc
+
+
+    def get_hierarchical_stats(
+        self,
+        *target_cols,
+        strategy: str = 'median',
+        hierarchy_cols: list | str = None,
+        output_type=None,
+    ):
+        """
+        Extract statistics for each progressively relaxed hierarchy level.
+
+        The full valid hierarchy is aggregated first, then its last grouping
+        column is removed for each subsequent level. No global level is added,
+        matching :meth:`fill_missing`. ``group_key`` is always a tuple,
+        including for one-column hierarchies. The source object is not modified.
+
+        By default, ``output_type`` is ``None`` and the result uses the same
+        ``BaseData``-family type as ``self`` when that type accepts
+        ``data=stats_df``. If that construction is unsupported, the default
+        falls back to a plain ``pandas.DataFrame``. Explicitly supported
+        output types are ``pandas.DataFrame``, ``dict``, ``BaseData``,
+        ``JsonFile``, ``CsvFile``, and custom subclasses of ``BaseData`` whose
+        constructors accept ``data=``. Unsupported values are rejected before
+        any aggregation.
+
+        For dataframe and ``BaseData``-family outputs, the columns are
+        ``hierarchy_level``, ``hierarchy_columns``, ``group_key``,
+        ``target_column``, ``strategy``, and ``statistic``. The first two
+        hierarchy fields are tuples, and rows are emitted in target-then-level
+        order. For ``dict`` output, the same schema is returned as a
+        deterministic column-oriented mapping of each column name to an
+        explicit list of values; tuple hierarchy and group keys are preserved.
+
+        Missing target values are ignored by ``mean`` and ``median``; groups
+        containing only null targets still produce a row with a null statistic.
+        For ``mode`` (and its alias ``mod``), null target values are excluded,
+        groups without a non-null target have no mode row, and ties use the
+        deterministic group-count ordering used by :meth:`fill_missing`. Null
+        hierarchy values remain valid grouping keys. Missing target or hierarchy
+        columns produce the existing warning/empty-result behavior, and an
+        invalid strategy produces the existing error/empty-result behavior.
+
+        Args:
+            *target_cols: Target columns from which statistics are extracted.
+                Columns that are not present are ignored; if none are valid,
+                an empty result is returned.
+            strategy (str): Aggregation strategy to use. Supported values are
+                ``median``, ``mean``, ``mode``, and ``mod``. ``mod`` is
+                normalized to ``mode`` in the result. Defaults to ``median``.
+            hierarchy_cols (list | str, optional): Grouping columns defining
+                the hierarchy. A single string is normalized to a one-item
+                list, and missing columns are ignored. Duplicate valid names
+                are removed while preserving their first-seen order. Each
+                successive level removes the last remaining grouping column.
+                Target columns may not overlap the valid hierarchy columns.
+            output_type (type | None, optional): Result type. ``None`` uses
+                the type of ``self`` when supported, with a plain DataFrame
+                fallback. ``pandas.DataFrame``, ``dict``, and BaseData-family
+                classes are supported. Defaults to ``None``.
+
+        Returns:
+            pandas.DataFrame | BaseData | dict: Statistics in the requested
+            output schema. Empty and invalid-result cases use the requested
+            output type whenever possible.
+
+        Examples:
+        ```
+            default_stats = df.get_hierarchical_stats(
+                "salary_min",
+                hierarchy_cols=["country", "title", "company_name"],
+            )
+            dataframe_stats = df.get_hierarchical_stats(
+                "salary_min",
+                strategy="mean",
+                hierarchy_cols="country",
+                output_type=pd.DataFrame,
+            )
+            dict_stats = df.get_hierarchical_stats(
+                "salary_min",
+                hierarchy_cols="country",
+                output_type=dict,
+            )
+        ```
+        """
+        self._validate_hierarchical_stats_output_type(output_type)
+        default_output = output_type is None
+        resolved_output_type = type(self) if default_output else output_type
+        self._validate_hierarchical_stats_output_type(resolved_output_type)
+
+        stats_df = pd.DataFrame(columns=_HIERARCHICAL_STATS_COLUMNS)
+
+        valid_cols = [col for col in target_cols if col in self.columns]
+        if not valid_cols:
+            print("Warning: No valid target columns found for statistics extraction.")
+            if default_output:
+                try:
+                    return self._convert_hierarchical_stats_output(
+                        stats_df, resolved_output_type
+                    )
+                except TypeError:
+                    return stats_df
+            return self._convert_hierarchical_stats_output(stats_df, resolved_output_type)
+
+        strategy = str(strategy).lower()
+        if strategy not in ['median', 'mean', 'mode', 'mod']:
+            print(f"Error: Invalid strategy '{strategy}'.")
+            if default_output:
+                try:
+                    return self._convert_hierarchical_stats_output(
+                        stats_df, resolved_output_type
+                    )
+                except TypeError:
+                    return stats_df
+            return self._convert_hierarchical_stats_output(stats_df, resolved_output_type)
+        canonical_strategy = 'mode' if strategy == 'mod' else strategy
+
+        if isinstance(hierarchy_cols, str):
+            hierarchy_cols = [hierarchy_cols]
+        valid_group = list(
+            dict.fromkeys(col for col in hierarchy_cols if col in self.columns)
+        ) if hierarchy_cols else []
+        overlapping_cols = [col for col in valid_cols if col in valid_group]
+        if overlapping_cols:
+            raise ValueError(
+                "target columns cannot overlap hierarchy columns: "
+                f"{overlapping_cols}"
+            )
+        if not valid_group or self.empty:
+            if default_output:
+                try:
+                    return self._convert_hierarchical_stats_output(
+                        stats_df, resolved_output_type
+                    )
+                except TypeError:
+                    return stats_df
+            return self._convert_hierarchical_stats_output(stats_df, resolved_output_type)
+
+        source_df = pd.DataFrame(self)
+        rows = []
+        if canonical_strategy in ['median', 'mean']:
+            aggregation_cols = list(dict.fromkeys(valid_cols))
+            level_aggregates = []
+            current_group = valid_group.copy()
+            while current_group:
+                grouped = (
+                    source_df.groupby(current_group, dropna=False)[aggregation_cols]
+                    .agg(canonical_strategy)
+                    .reset_index()
+                )
+                level_aggregates.append((tuple(current_group), grouped))
+                current_group.pop()
+
+            for col in valid_cols:
+                for hierarchy_columns, grouped in level_aggregates:
+                    group_keys = list(
+                        zip(*(grouped[group_col] for group_col in hierarchy_columns))
+                    )
+                    statistics = grouped[col].tolist()
+                    for group_key, statistic in zip(group_keys, statistics):
+                        rows.append(
+                            {
+                                'hierarchy_level': len(hierarchy_columns),
+                                'hierarchy_columns': hierarchy_columns,
+                                'group_key': group_key,
+                                'target_column': col,
+                                'strategy': canonical_strategy,
+                                'statistic': statistic,
+                            }
+                        )
+        else:
+            unique_targets = list(dict.fromkeys(valid_cols))
+            internal_target_column = '_hierarchical_stats_target'
+            internal_value_column = '_hierarchical_stats_value'
+
+            while internal_target_column in self.columns:
+                internal_target_column += '_'
+
+            while internal_value_column in self.columns or internal_value_column == internal_target_column:
+                internal_value_column += '_'
+
+            internal_count_column = '_hierarchical_stats_count'
+            while (
+                internal_count_column in source_df.columns
+                or internal_count_column in {
+                    internal_target_column,
+                    internal_value_column,
+                }
+            ):
+                internal_count_column += '_'
+
+            mode_values = source_df[valid_group + unique_targets].melt(
+                id_vars=valid_group,
+                value_vars=unique_targets,
+                var_name=internal_target_column,
+                value_name=internal_value_column,
+            )
+            mode_values = mode_values[mode_values[internal_value_column].notna()]
+            level_counts = []
+            current_group = valid_group.copy()
+
+            while current_group:
+                counts = (
+                    mode_values.groupby(
+                        current_group + [internal_target_column, internal_value_column],
+                        dropna=False,
+                    )
+                    .size()
+                    .reset_index(name=internal_count_column)
+                )
+                level_counts.append((tuple(current_group), counts))
+                current_group.pop()
+
+            for col in valid_cols:
+                for hierarchy_columns, counts in level_counts:
+                    target_counts = counts[
+                        counts[internal_target_column] == col
+                    ].drop(columns=[internal_target_column])
+                    if target_counts.empty:
+                        continue
+
+                    target_counts = target_counts.sort_values(
+                        list(hierarchy_columns) + [internal_count_column],
+                        ascending=[True] * len(hierarchy_columns) + [False],
+                    )
+                    modes_df = target_counts.drop_duplicates(subset=list(hierarchy_columns))
+                    group_keys = list(
+                        zip(*(modes_df[group_col] for group_col in hierarchy_columns))
+                    )
+                    statistics = modes_df[internal_value_column].tolist()
+                    for group_key, statistic in zip(group_keys, statistics):
+                        rows.append(
+                            {
+                                'hierarchy_level': len(hierarchy_columns),
+                                'hierarchy_columns': hierarchy_columns,
+                                'group_key': group_key,
+                                'target_column': col,
+                                'strategy': canonical_strategy,
+                                'statistic': statistic,
+                            }
+                        )
+
+        stats_df = pd.DataFrame(rows, columns=_HIERARCHICAL_STATS_COLUMNS)
+        if default_output:
+            try:
+                return self._convert_hierarchical_stats_output(
+                    stats_df, resolved_output_type
+                )
+            except TypeError:
+                return stats_df
+        return self._convert_hierarchical_stats_output(stats_df, resolved_output_type)
 
 
     def categorize_by_reference(
