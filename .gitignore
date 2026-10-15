@@ -43,7 +43,3 @@ Settings/Cache Data/
 # OS files
 .DS_Store
 Thumbs.db
-
-# Test output
-tests/
-test.yml
