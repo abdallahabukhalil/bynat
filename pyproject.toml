@@ -4,10 +4,24 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bynat"
-version = "0.1.0"
+version = "0.1.1"
 description = "A collection of reusable Python utilities"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
+dependencies = [
+    "Babel",
+    "Caching",
+    "deep-translator",
+    "geopy",
+    "langdetect",
+    "numpy",
+    "pandas",
+    "pyahocorasick",
+    "pycountry",
+    "spacy",
+    "SQLAlchemy",
+    "yfinance",
+]
 license = "MIT"
 authors = [
     { name = "Abdallah Abukhalil" }
