@@ -36,7 +36,7 @@ Install an integration group when needed, for example:
 python -m pip install "bynat[translation]"
 ```
 
-These integrations are imported only when their methods are used. Basic imports and core dataframe operations do not require them. Calling a method that needs a missing integration raises an `ImportError` naming the required optional dependency. The `pyahocorasick` distribution-to-`ahocorasick` import mapping was not verifiable from the offline environment and should be confirmed before publishing.
+These integrations are imported only when their methods are used. Basic imports and core dataframe operations do not require them. Calling a method that needs a missing integration raises an `ImportError` naming the required optional dependency. Install the extra corresponding to the feature you use.
 
 `extract_entities_nlp` also needs a compatible spaCy model, defaulting to `en_core_web_sm`. `save_to_sql` needs the DBAPI driver required by the SQLAlchemy URL. Neither model files nor database drivers are bundled.
 
@@ -197,7 +197,7 @@ python -m pytest -q
 python -m compileall -q bynat
 ```
 
-Building a wheel or source archive requires the configured setuptools build backend and wheel tooling. Those tools are not vendored in this repository; an offline environment must already have them installed. Generated `dist/` and `*.egg-info/` directories are not source-of-truth project files.
+Building a wheel or source archive requires the configured setuptools build backend and wheel tooling.
 
 ## License
 
