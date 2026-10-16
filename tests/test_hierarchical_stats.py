@@ -6,6 +6,11 @@ import pandas as pd
 import pytest
 
 from bynat.cleaning import BaseData, CsvFile, JsonFile
+from bynat.cleaning.Cleaning import (
+    _HIERARCHICAL_STATS_COLUMNS,
+    _convert_output,
+    _validate_output_type,
+)
 
 
 OUTPUT_COLUMNS = [
@@ -369,7 +374,7 @@ def test_get_hierarchical_stats_aggregates_all_mode_targets_once_per_level(
         hierarchy_cols=["region", "department"],
     )
 
-    assert len(groupby_calls) == 2
+    assert len(groupby_calls) == 4
     assert result["target_column"].tolist() == ["first"] * 6 + ["second"] * 6
 
 
@@ -390,14 +395,175 @@ def test_get_hierarchical_stats_mode_allows_hierarchy_column_named_count(tmp_pat
     assert result["statistic"].tolist() == ["x", "y"]
 
 
+def test_generic_output_helpers_are_schema_independent(tmp_path):
+    data = pd.DataFrame({"alpha": [("x",)], "beta": [3]})
+
+    assert isinstance(_HIERARCHICAL_STATS_COLUMNS, tuple)
+    assert _convert_output(data, dict) == {
+        "alpha": [("x",)],
+        "beta": [3],
+    }
+    _validate_output_type(pd.DataFrame)
+    _validate_output_type(dict)
+    _validate_output_type(BaseData)
+
+    with pytest.raises(TypeError, match="output_type"):
+        _validate_output_type("records")
+
+
+def test_get_hierarchical_stats_supports_ordered_multiple_strategies(tmp_path):
+    frame = BaseData(
+        {
+            "group": ["a", "a", "b", "b"],
+            "first": [1, 3, 5, 7],
+            "second": [10, 10, 20, 30],
+        },
+        cache_dir=tmp_path,
+    )
+
+    result = frame.get_hierarchical_stats(
+        "first",
+        "second",
+        strategy=["mode", "mean", "median"],
+        hierarchy_cols="group",
+    )
+
+    assert list(result.columns) == OUTPUT_COLUMNS
+    assert result["strategy"].tolist() == [
+        "mode",
+        "mode",
+        "mode",
+        "mode",
+        "mean",
+        "mean",
+        "mean",
+        "mean",
+        "median",
+        "median",
+        "median",
+        "median",
+    ]
+    assert result["target_column"].tolist() == [
+        "first",
+        "first",
+        "second",
+        "second",
+        "first",
+        "first",
+        "second",
+        "second",
+        "first",
+        "first",
+        "second",
+        "second",
+    ]
+    assert not result.duplicated(
+        subset=["hierarchy_level", "hierarchy_columns", "group_key", "target_column", "strategy"]
+    ).any()
+
+
+def test_get_hierarchical_stats_rejects_non_string_strategy_values_before_aggregation(
+    monkeypatch, tmp_path
+):
+    frame = BaseData({"group": ["a"], "value": [1]}, cache_dir=tmp_path)
+
+    def unexpected_aggregation(*args, **kwargs):
+        pytest.fail("aggregation should not run before strategy validation")
+
+    monkeypatch.setattr(pd.DataFrame, "groupby", unexpected_aggregation)
+
+    with pytest.raises(TypeError, match="strategy"):
+        frame.get_hierarchical_stats("value", strategy=["mean", 1], hierarchy_cols="group")
+
+
+def test_get_hierarchical_stats_mode_has_no_melt_and_keeps_null_groups(tmp_path, monkeypatch):
+    frame = BaseData(
+        {
+            "group": ["a"] * 100 + ["b"] * 100 + [None],
+            "label": ["x"] * 60 + ["y"] * 40 + ["z"] * 100 + [None],
+        },
+        cache_dir=tmp_path,
+    )
+
+    def unexpected_melt(*args, **kwargs):
+        pytest.fail("mode aggregation must not materialize a melt intermediate")
+
+    monkeypatch.setattr(pd.DataFrame, "melt", unexpected_melt)
+    result = frame.get_hierarchical_stats("label", strategy="mode", hierarchy_cols="group")
+
+    assert result["group_key"].tolist() == [("a",), ("b",)]
+    assert result["statistic"].tolist() == ["x", "z"]
+
+
+def test_get_hierarchical_stats_default_fallback_requires_data_signature(tmp_path):
+    class NoDataParameter(BaseData):
+        def __init__(self, frame, **kwargs):
+            super().__init__(data=frame, **kwargs)
+
+    frame = NoDataParameter(
+        {"group": ["a", "a", "b"], "value": [1, None, 3]},
+        cache_dir=tmp_path,
+    )
+
+    result = frame.get_hierarchical_stats("value", hierarchy_cols="group")
+
+    assert type(result) is pd.DataFrame
+    assert result["statistic"].tolist() == [1.0, 3.0]
+
+
+def test_get_hierarchical_stats_propagates_internal_constructor_errors(tmp_path):
+    class ConstructorFailure(BaseData):
+        def __init__(self, data=None, *args, **kwargs):
+            if isinstance(data, pd.DataFrame):
+                raise TypeError("constructor internal failure")
+            super().__init__(data=data, *args, **kwargs)
+
+    frame = ConstructorFailure(
+        {"group": ["a", "a", "b"], "value": [1, None, 3]},
+        cache_dir=tmp_path,
+    )
+
+    with pytest.raises(TypeError, match="constructor internal failure"):
+        frame.get_hierarchical_stats("value", hierarchy_cols="group")
+
+
+def test_get_hierarchical_stats_all_output_types_keep_multi_strategy_schema(tmp_path):
+    frame = BaseData({"group": ["a", "b"], "value": [1, 2]}, cache_dir=tmp_path)
+
+    for output_type in (pd.DataFrame, dict, BaseData, JsonFile, CsvFile):
+        result = frame.get_hierarchical_stats(
+            "value",
+            strategy=["mean", "median"],
+            hierarchy_cols="group",
+            output_type=output_type,
+        )
+        if output_type is dict:
+            assert list(result) == OUTPUT_COLUMNS
+            assert result["strategy"] == ["mean", "mean", "median", "median"]
+        else:
+            assert type(result) is output_type
+            assert list(result.columns) == OUTPUT_COLUMNS
+            assert result["strategy"].tolist() == ["mean", "mean", "median", "median"]
+
+
+def test_get_hierarchical_stats_mode_empty_valid_values_returns_empty_rows(tmp_path):
+    frame = BaseData(
+        {"group": ["a", "b", None], "label": [None, None, None]},
+        cache_dir=tmp_path,
+    )
+
+    result = frame.get_hierarchical_stats("label", strategy="mode", hierarchy_cols="group")
+
+    assert result.empty
+    assert list(result.columns) == OUTPUT_COLUMNS
+
+
 def test_get_hierarchical_stats_falls_back_to_dataframe_for_incompatible_default_subclass(
     tmp_path,
 ):
     class NoIntermediateConstruction(BaseData):
-        def __init__(self, data=None, *args, **kwargs):
-            if isinstance(data, pd.DataFrame):
-                raise TypeError("intermediate DataFrame construction is unsupported")
-            super().__init__(data=data, *args, **kwargs)
+        def __init__(self, frame, **kwargs):
+            super().__init__(data=frame, **kwargs)
 
     frame = NoIntermediateConstruction(
         {"group": ["a", "a", "b"], "value": [1, None, 3]},
