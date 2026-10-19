@@ -77,6 +77,33 @@ def _convert_default_output(data: pd.DataFrame, output_type):
     return _convert_output(data, output_type)
 
 
+def _left_merge_aligned(frame: pd.DataFrame, right: pd.DataFrame, on: list) -> pd.DataFrame:
+    """
+    Left-merge `right` onto the `on` columns of `frame` and return the result
+    indexed like `frame`.
+
+    A left merge preserves the row order of the left frame, so the merged rows
+    are re-labelled positionally. This works for named, duplicate, and
+    multi-level indexes, unlike round-tripping through `reset_index()`.
+    """
+    merged = frame[on].merge(right, on = on, how = 'left')
+    merged.index = frame.index
+    return merged
+
+
+def _dedupe_key(value):
+    """Return a hashable stand-in for unhashable values such as lists and dicts."""
+    if isinstance(value, set):
+        value = sorted(value, key = str)
+    elif isinstance(value, np.ndarray):
+        value = value.tolist()
+
+    if isinstance(value, (list, dict, tuple)):
+        return json.dumps(value, sort_keys = True, default = str)
+
+    return value
+
+
 
 class BaseData(pd.DataFrame):
     """
@@ -1792,7 +1819,7 @@ class BaseData(pd.DataFrame):
         if not rates_df.empty:
             rates_df.columns = [country_col, year_col, '_conversion_rate']
 
-            temp_df = result.reset_index().merge(rates_df, on=[country_col, year_col], how = 'left').set_index('index')
+            temp_df = _left_merge_aligned(result, rates_df, [country_col, year_col])
 
             for col in valid_cols:
                 col_name = f"{col}_usd" if new_cols else col
@@ -1876,11 +1903,11 @@ class BaseData(pd.DataFrame):
                     bounds['lower_bound'] = bounds['q1'] - 1.5 * iqr
                     bounds['upper_bound'] = bounds['q3'] + 1.5 * iqr
 
-                    merged_df = result.reset_index().merge(
+                    merged_df = _left_merge_aligned(
+                            result,
                             bounds.drop(columns = ['q1', 'q3']),
-                            on = current_hierarchy,
-                            how = 'left'
-                        ).set_index('index')
+                            current_hierarchy
+                        )
 
                     is_outlier = (
                         valid_group_mask & unprocessed_mask &
@@ -1973,11 +2000,11 @@ class BaseData(pd.DataFrame):
                     bounds['lower_bound'] = bounds['q1'] - 1.5 * iqr
                     bounds['upper_bound'] = bounds['q3'] + 1.5 * iqr
 
-                    merged_df = result.reset_index().merge(
+                    merged_df = _left_merge_aligned(
+                            result,
                             bounds.drop(columns = ['q1', 'q3']),
-                            on = current_hierarchy,
-                            how = 'left'
-                        ).set_index('index')
+                            current_hierarchy
+                        )
 
                     is_outlier = (
                         valid_group_mask & unprocessed_mask &
@@ -2088,7 +2115,7 @@ class BaseData(pd.DataFrame):
 
                     modes_df = counts.drop_duplicates(subset = current_group).rename(columns = {col: '_mode_val'})
 
-                    temp_df = result.reset_index().merge(modes_df[current_group + ['_mode_val']], on = current_group, how = 'left').set_index('index')
+                    temp_df = _left_merge_aligned(result, modes_df[current_group + ['_mode_val']], current_group)
                     result[col] = result[col].fillna(temp_df['_mode_val'])
 
                 current_group.pop()
@@ -2837,7 +2864,11 @@ class BaseData(pd.DataFrame):
                     combined_df = pd.concat([existing_df, export_df], ignore_index = True)
 
                     initial_count = len(combined_df)
-                    combined_df.drop_duplicates(inplace = True)
+                    # Lists and dicts are unhashable, so compare object columns by a JSON key.
+                    dedupe_view = combined_df.apply(
+                        lambda col: col.map(_dedupe_key) if col.dtype == object else col
+                    )
+                    combined_df = combined_df[~dedupe_view.duplicated()].reset_index(drop = True)
                     duplicates_removed = initial_count - len(combined_df)
 
                     export_df = combined_df
