@@ -61,3 +61,34 @@ def test_cache_directory_is_created_on_save_not_construction(tmp_path):
     manager = CacheManager(cache_dir)
     manager.save_function_cache("function")
     assert (cache_dir / "function_cache.json").exists()
+
+
+def test_failed_save_keeps_previous_cache_file_intact(tmp_path, capsys):
+    manager = CacheManager(tmp_path)
+    manager.get_column_cache("function", "column")["good"] = "value"
+    manager.save_function_cache("function")
+    cache_file = tmp_path / "function_cache.json"
+    previous = cache_file.read_text(encoding="utf-8")
+
+    manager.get_column_cache("function", "column")["bad"] = object()
+    manager.save_function_cache("function")
+
+    assert "Could not save cache file" in capsys.readouterr().out
+    assert cache_file.read_text(encoding="utf-8") == previous
+    assert [path.name for path in tmp_path.iterdir()] == ["function_cache.json"]
+
+
+def test_interrupted_replace_leaves_no_partial_or_temp_files(tmp_path, monkeypatch, capsys):
+    import os
+
+    manager = CacheManager(tmp_path)
+    manager.get_column_cache("function", "column")["key"] = "value"
+
+    def failing_replace(src, dst):
+        raise OSError("simulated interruption")
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+    manager.save_function_cache("function")
+
+    assert "simulated interruption" in capsys.readouterr().out
+    assert list(tmp_path.iterdir()) == []
