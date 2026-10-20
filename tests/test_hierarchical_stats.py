@@ -12,7 +12,6 @@ from bynat.cleaning.Cleaning import (
     _validate_output_type,
 )
 
-
 OUTPUT_COLUMNS = [
     "hierarchy_level",
     "hierarchy_columns",

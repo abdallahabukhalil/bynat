@@ -1,7 +1,7 @@
-import os
 import json
+import os
+import tempfile
 from os import PathLike
-
 
 __all__ = ['CacheManager']
 
@@ -49,10 +49,10 @@ class CacheManager:
             raise ValueError("cache_dir cannot be empty")
 
         expanded_cache_dir = os.path.expandvars(os.path.expanduser(cache_dir))
-        
+
         self.cache_dir_path = os.path.abspath(expanded_cache_dir)
         self.cache_dir = os.path.normpath(expanded_cache_dir)
-        
+
         self.caches = {}
 
 
@@ -129,7 +129,7 @@ class CacheManager:
 
             if os.path.exists(file_path):
                 try:
-                    with open(file_path, 'r', encoding = 'utf-8') as cache:
+                    with open(file_path, encoding = 'utf-8') as cache:
                         loaded_cache = json.load(cache)
 
                     self.caches[func_name] = loaded_cache if isinstance(loaded_cache, dict) else {}
@@ -137,10 +137,10 @@ class CacheManager:
                 except (json.JSONDecodeError, OSError) as e:
                     print(f"Error: Cache file '{file_path}' is corrupted or unreadable. Starting with an empty cache.\n Details: {e}")
                     self.caches[func_name] = {}
-            
+
             else:
                 self.caches[func_name] = {}
-        
+
         return self.caches[func_name]
 
 
@@ -158,16 +158,20 @@ class CacheManager:
         """
         col_name = self._validate_cache_key(col_name, "col_name")
         func_cache = self.load_function_cache(func_name)
-        
+
         if col_name not in func_cache or not isinstance(func_cache[col_name], dict):
             func_cache[col_name] = {}
-        
+
         return func_cache[col_name]
 
 
     def save_function_cache(self, func_name: str):
         """
         Persist the in-memory cache for a function to disk as JSON.
+
+        The JSON is written to a temporary file in the cache directory and then
+        moved over the target with `os.replace`, so an interrupted or failed
+        save leaves the previous cache file intact instead of truncated.
 
         Args:
             func_name (str): Function identifier whose cache should be written.
@@ -181,15 +185,34 @@ class CacheManager:
             self.caches[func_name] = {}
 
         os.makedirs(self.cache_dir_path, exist_ok = True)
-        
-        file_path = self._get_file_path(func_name)
-        
-        try:
-            with open(file_path, 'w', encoding = 'utf-8') as f:
-                json.dump(self.caches[func_name], f, ensure_ascii = False, indent = 4)
 
-        except (TypeError, OSError) as e:
+        file_path = self._get_file_path(func_name)
+
+        temp_path = None
+
+        try:
+            with tempfile.NamedTemporaryFile(
+                'w',
+                encoding = 'utf-8',
+                dir = self.cache_dir_path,
+                prefix = f".{func_name}_cache.",
+                suffix = ".tmp",
+                delete = False
+            ) as f:
+                temp_path = f.name
+                json.dump(self.caches[func_name], f, ensure_ascii = False, indent = 4)
+                f.flush()
+                os.fsync(f.fileno())
+
+            os.replace(temp_path, file_path)
+            temp_path = None
+
+        except (TypeError, ValueError, OSError) as e:
             print(f"Error: Could not save cache file '{file_path}'.\n Details: {e}")
+
+        finally:
+            if temp_path is not None and os.path.exists(temp_path):
+                os.remove(temp_path)
 
 
     def delete_column_cache(self, func_name: str, col_name: str):
@@ -205,12 +228,12 @@ class CacheManager:
         """
         col_name = self._validate_cache_key(col_name, "col_name")
         func_cache = self.load_function_cache(func_name)
-        
+
         if col_name in func_cache:
             del func_cache[col_name]
             self.save_function_cache(func_name)
-            
+
             print(f"Cache for column '{col_name}' deleted from '{func_name}_cache.json'")
-        
+
         else:
             print(f"No cache found for column '{col_name}' in '{func_name}_cache.json'")

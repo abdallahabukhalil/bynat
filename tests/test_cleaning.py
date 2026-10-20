@@ -239,9 +239,12 @@ def test_hierarchy_methods_support_named_multi_and_duplicate_indexes(tmp_path, i
 
     assert handled["v"].isna().tolist() == [False] * 5 + [True]
     assert handled.index.equals(index)
-    if index.is_unique:
-        # drop_outliers drops by label, so a duplicated label also drops its twin row.
-        assert dropped["v"].tolist() == [1.0, 2.0, 3.0, 4.0, 5.0]
+    assert dropped["v"].tolist() == [1.0, 2.0, 3.0, 4.0, 5.0]
+    assert dropped.index.equals(index[:5])
+
+    in_place = frame.copy()
+    assert in_place.drop_outliers("v", hierarchy_cols=["g"], inplace=True) is None
+    assert in_place.equals(dropped)
 
     modes = BaseData(
         {"g": ["a"] * 6, "c": ["x", "x", "y", None, "x", None]},
@@ -251,3 +254,20 @@ def test_hierarchy_methods_support_named_multi_and_duplicate_indexes(tmp_path, i
 
     assert modes["c"].tolist() == ["x", "x", "y", "x", "x", "x"]
     assert modes.index.equals(index)
+
+
+
+def test_save_to_json_append_deduplicates_plain_columns_without_json_keys(tmp_path, monkeypatch):
+    import bynat.cleaning.Cleaning as cleaning
+
+    file_path = tmp_path / "out.json"
+    BaseData({"a": [1, 2], "b": ["x", "y"]}, cache_dir=tmp_path).save_to_json(file_path)
+
+    monkeypatch.setattr(cleaning, "_dedupe_key", lambda value: pytest.fail("fast path expected"))
+    BaseData({"a": [2, 3], "b": ["y", "z"]}, cache_dir=tmp_path).save_to_json(file_path, append=True)
+
+    assert json.loads(file_path.read_text(encoding="utf-8")) == [
+        {"a": 1, "b": "x"},
+        {"a": 2, "b": "y"},
+        {"a": 3, "b": "z"},
+    ]
