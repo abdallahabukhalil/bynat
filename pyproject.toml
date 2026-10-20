@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bynat"
-version = "0.1.1"
+version = "0.2.0"
 description = "A collection of reusable Python utilities"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -46,3 +46,15 @@ sql = [
 
 [tool.setuptools.packages.find]
 include = ["bynat*"]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+# Docstrings hold long tables and examples; wrapping them adds churn, not clarity.
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Subpackages re-export their module's __all__.
+"__init__.py" = ["F401", "F403"]

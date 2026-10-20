@@ -1,17 +1,20 @@
 import importlib
 import inspect
 import json
+import logging
 import os
 import re
 import time
 import urllib.parse
-from collections.abc import Iterable
-from typing import Callable, Optional, Self
+from collections.abc import Callable, Iterable
+from typing import Self
 
 import numpy as np
 import pandas as pd
 
 from bynat.caching import CacheManager
+
+logger = logging.getLogger(__name__)
 
 
 def _import_optional(module_name: str, distribution: str, feature: str):
@@ -77,6 +80,33 @@ def _convert_default_output(data: pd.DataFrame, output_type):
     return _convert_output(data, output_type)
 
 
+def _left_merge_aligned(frame: pd.DataFrame, right: pd.DataFrame, on: list) -> pd.DataFrame:
+    """
+    Left-merge `right` onto the `on` columns of `frame` and return the result
+    indexed like `frame`.
+
+    A left merge preserves the row order of the left frame, so the merged rows
+    are re-labelled positionally. This works for named, duplicate, and
+    multi-level indexes, unlike round-tripping through `reset_index()`.
+    """
+    merged = frame[on].merge(right, on = on, how = 'left')
+    merged.index = frame.index
+    return merged
+
+
+def _dedupe_key(value):
+    """Return a hashable stand-in for unhashable values such as lists and dicts."""
+    if isinstance(value, set):
+        value = sorted(value, key = str)
+    elif isinstance(value, np.ndarray):
+        value = value.tolist()
+
+    if isinstance(value, (list, dict, tuple)):
+        return json.dumps(value, sort_keys = True, default = str)
+
+    return value
+
+
 
 class BaseData(pd.DataFrame):
     """
@@ -102,13 +132,15 @@ class BaseData(pd.DataFrame):
         return type(self)
 
 
-    def __init__(self, data = None, cache_dir: str = "Settings/Cache Data/Automated", *args, **kwargs) -> None:
+    def __init__(self, data = None, cache_dir: str | os.PathLike | None = None, *args, **kwargs) -> None:
         """
         Initialize the custom dataframe from in-memory tabular data.
 
         Args:
             data: Optional tabular data passed directly to `pandas.DataFrame`.
-            cache_dir: Directory for caching data. Defaults to "Settings/Cache Data/Automated".
+            cache_dir: Directory for caching data. When None, uses the
+                `BYNAT_CACHE_DIR` environment variable if set, otherwise
+                "Settings/Cache Data/Automated".
             *args: Additional positional arguments forwarded to
                 `pandas.DataFrame`.
             **kwargs: Additional keyword arguments forwarded to
@@ -419,7 +451,7 @@ class BaseData(pd.DataFrame):
         else:
             return self[final_order]
 
-    
+
     def melt_transform_pivot(
         self,
         id_vars: list | str,
@@ -483,7 +515,7 @@ class BaseData(pd.DataFrame):
                 overlap incorrectly, or if `transform_func` returns invalid
                 output.
             RuntimeError: If `transform_func` raises an exception.
-            
+
         Example:
         ```
             # Bulk clean 3 columns simultaneously by making them uppercase
@@ -494,7 +526,7 @@ class BaseData(pd.DataFrame):
             )
         ```
         """
-        
+
         if isinstance(id_vars, str):
             id_vars = [id_vars]
 
@@ -504,17 +536,17 @@ class BaseData(pd.DataFrame):
         else:
             try:
                 id_vars = list(id_vars)
-            
+
             except TypeError as e:
                 raise TypeError("id_vars must be a column name or an iterable of column names") from e
-        
+
         if isinstance(value_vars, str):
             value_vars = [value_vars]
 
         elif value_vars is not None:
             try:
                 value_vars = list(value_vars)
-            
+
             except TypeError as e:
                 raise TypeError("value_vars must be a column name, an iterable of column names, or None") from e
 
@@ -533,7 +565,7 @@ class BaseData(pd.DataFrame):
         duplicate_id_vars = pd.Index(id_vars)
         if duplicate_id_vars.has_duplicates:
             duplicates = duplicate_id_vars[duplicate_id_vars.duplicated()].unique().tolist()
-            
+
             raise ValueError(f"id_vars contains duplicate columns: {duplicates}")
 
         missing_id_vars = [col for col in id_vars if col not in self.columns]
@@ -582,7 +614,7 @@ class BaseData(pd.DataFrame):
         if transform_func is not None:
             try:
                 transformed_values = transform_func(melted[value_name], **kwargs)
-            
+
             except Exception as e:
                 raise RuntimeError(f"transform_func failed while processing '{value_name}': {e}") from e
 
@@ -597,7 +629,7 @@ class BaseData(pd.DataFrame):
 
             try:
                 transformed_values = pd.Series(transformed_values)
-            
+
             except Exception as e:
                 raise ValueError("transform_func must return a one-dimensional array-like or Series") from e
 
@@ -609,28 +641,28 @@ class BaseData(pd.DataFrame):
         if isinstance(pivot_columns, str):
             actual_pivot_columns = pivot_columns
             pivot_columns_list = [pivot_columns]
-        
+
         elif pivot_columns is None:
             actual_pivot_columns = var_name
             pivot_columns_list = [var_name]
-        
+
         else:
             try:
                 pivot_columns_list = list(pivot_columns)
-            
+
             except TypeError as e:
                 raise TypeError("pivot_columns must be a column name, an iterable of column names, or None") from e
 
             actual_pivot_columns = pivot_columns_list
-        
+
         if pivot_index is not None:
             if isinstance(pivot_index, str):
                 actual_pivot_index = [pivot_index]
-            
+
             else:
                 try:
                     actual_pivot_index = list(pivot_index)
-                
+
                 except TypeError as e:
                     raise TypeError("pivot_index must be a column name, an iterable of column names, or None") from e
         else:
@@ -639,7 +671,7 @@ class BaseData(pd.DataFrame):
 
                 if var_name not in pivot_columns_list:
                     actual_pivot_index.append(var_name)
-            
+
             else:
                 actual_pivot_index = id_vars
 
@@ -688,10 +720,10 @@ class BaseData(pd.DataFrame):
         if inplace:
             self.drop(index = self.index, inplace = True)
             self.drop(columns = self.columns, inplace = True)
-            
+
             for col in pivoted.columns:
                 self[col] = pivoted[col].to_numpy()
-            
+
             return None
 
         return self._constructor(pivoted)
@@ -867,7 +899,7 @@ class BaseData(pd.DataFrame):
 
                     except ValueError:
                         extracted_match = combined_text.str.extract(rf"({word})", expand = True)
-                
+
                     if not extracted_match.empty:
                         match_col = extracted_match.iloc[:, 0]
 
@@ -1087,6 +1119,7 @@ class BaseData(pd.DataFrame):
             "langdetect", "langdetect", "impute_by_language"
         )
         langdetect.DetectorFactory.seed = 0
+        detect_error = getattr(langdetect, "LangDetectException", Exception)
         detect = langdetect.detect
 
         result = self.copy() if not inplace else self
@@ -1123,7 +1156,7 @@ class BaseData(pd.DataFrame):
                 try:
                     if detect(text) == target_lang:
                         mapping_dict[ref] = val
-                except:
+                except detect_error:
                     continue
 
             all_unique_refs = result[reference_col].dropna().unique()
@@ -1211,6 +1244,7 @@ class BaseData(pd.DataFrame):
             "langdetect", "langdetect", "translate_conditional_column"
         )
         langdetect.DetectorFactory.seed = 0
+        detect_error = getattr(langdetect, "LangDetectException", Exception)
         detect = langdetect.detect
 
         result = self.copy() if not inplace else self
@@ -1236,7 +1270,7 @@ class BaseData(pd.DataFrame):
                     if detect(str(combined_text)) == target_lang:
                         lang_match_count += 1
 
-                except:
+                except detect_error:
                     pass
 
             if lang_match_count >= (number_of_samples * threshold):
@@ -1258,7 +1292,7 @@ class BaseData(pd.DataFrame):
 
         if values_to_translate:
             num_of_values = len(values_to_translate)
-            print(f"preparing {num_of_values} values to be translated...")
+            logger.info("preparing %s values to be translated...", num_of_values)
 
             translator_module = _import_optional(
                 "deep_translator", "deep-translator", "translate_conditional_column"
@@ -1283,16 +1317,16 @@ class BaseData(pd.DataFrame):
 
                     if (i + 1) % save_every == 0:
                         self.cache_manager.save_function_cache(func_name)
-                        print(f"Checkpoint: Safely saved {i + 1} / {num_of_values} translations to cache...")
+                        logger.info("Checkpoint: Safely saved %s / %s translations to cache...", i + 1, num_of_values)
 
                 except Exception as e:
-                    print(f"Failed to translate: '{val}'. Skipping cache for this item. Error: {e}.")
+                    logger.warning("Failed to translate: '%s'. Skipping cache for this item. Error: %s", val, e)
                     continue
 
             if cache_updated:
                 self.cache_manager.save_function_cache(func_name)
 
-            print("All translations completed and safely cached!")
+            logger.info("All translations completed and safely cached!")
 
         unique_vals = result[target_col].dropna().unique()
 
@@ -1406,10 +1440,10 @@ class BaseData(pd.DataFrame):
 
                     if (i + 1) % save_every == 0:
                         self.cache_manager.save_function_cache(func_name)
-                        print(f"Checkpoint: Safely saved {i + 1} / {num_of_values} translations to cache...")
+                        logger.info("Checkpoint: Safely saved %s / %s translations to cache...", i + 1, num_of_values)
 
                 except Exception as e:
-                    print(f"Failed to translate: {val}. Skipping cache for this item. Error: {e}.")
+                    logger.warning("Failed to translate: %s. Skipping cache for this item. Error: %s", val, e)
 
                     continue
 
@@ -1426,7 +1460,7 @@ class BaseData(pd.DataFrame):
         result[target_col] = result[target_col].map(lookup_dict).fillna(result[target_col])
 
         return None if inplace else result
-    
+
 
     def truncate_after_substring(self, inplace: bool = False, regex: bool = True, **target_cols_and_substrings) -> (Self | None):
         """
@@ -1486,10 +1520,12 @@ class BaseData(pd.DataFrame):
 
     def fill_missing_coordinates(
         self,
-        *fallback_cols,
+        *fallback_cols: str,
         lat_col: str,
         long_col: str,
         save_every: int = 1000,
+        user_agent: str = "data_cleaning_core_geocoder",
+        retry_not_found: bool = False,
         inplace: bool = False
     ) -> (Self | None):
         """
@@ -1498,10 +1534,14 @@ class BaseData(pd.DataFrame):
 
         Notes:
             The method builds a location query from the supplied fallback
-            columns, caches geocoding results, and progressively shortens failed
-            queries from right to left to improve match chances. Existing valid
-            coordinates are preserved and only missing coordinate fields are
-            updated.
+            columns, caches geocoding results, and progressively drops the
+            leftmost (most specific) part of a failed query, e.g.
+            `"street, city, country"` -> `"city, country"` -> `"country"`.
+            Existing valid coordinates are preserved and only missing
+            coordinate fields are updated.
+
+            Queries that Nominatim cannot resolve are cached as `null`, so later
+            runs do not re-query them. Network or service errors are not cached.
 
         Args:
             *fallback_cols: Ordered columns used to build the geocoding query.
@@ -1509,6 +1549,11 @@ class BaseData(pd.DataFrame):
             long_col (str): Longitude column name.
             save_every (int): Cache checkpoint frequency while geocoding.
                 Defaults to 1000.
+            user_agent (str): User agent sent to Nominatim. Its usage policy
+                asks for one that identifies your application. Defaults to
+                `"data_cleaning_core_geocoder"`.
+            retry_not_found (bool): If True, re-query locations previously
+                cached as not found. Defaults to False.
             inplace (bool): If True, modifies the object directly and returns
                 None. Defaults to False.
 
@@ -1524,14 +1569,14 @@ class BaseData(pd.DataFrame):
 
         required_cols = [lat_col, long_col]
         if not all(col in self.columns for col in required_cols):
-            print(f"Warning: Missing coordinate columns. Skipping geocoding.")
+            logger.warning("Missing coordinate columns. Skipping geocoding.")
             return self if not inplace else None
 
         result = self.copy() if not inplace else self
 
         valid_fallbacks = [col for col in fallback_cols if col in result.columns]
         if not valid_fallbacks:
-            print("Warning: No valid fallback columns found. Skipping geocoding.")
+            logger.warning("No valid fallback columns found. Skipping geocoding.")
             return None if inplace else result
 
         mask_missing = result[lat_col].isna() | result[long_col].isna()
@@ -1571,13 +1616,16 @@ class BaseData(pd.DataFrame):
         func_name = "fill_missing_coordinates"
         current_cache = self.cache_manager.get_column_cache(func_name, "geocode_queries")
 
-        queries_to_fetch = [q for q in unique_queries if q not in current_cache]
+        queries_to_fetch = [
+            q for q in unique_queries
+            if q not in current_cache or (retry_not_found and current_cache[q] is None)
+        ]
 
         if queries_to_fetch:
             cache_updated = False
 
             num_of_queries = len(queries_to_fetch)
-            print(f"preparing {num_of_queries} locations to be geocoded...")
+            logger.info("preparing %s locations to be geocoded...", num_of_queries)
 
             geopy_geocoders = _import_optional(
                 "geopy.geocoders", "geopy", "fill_missing_coordinates"
@@ -1585,7 +1633,7 @@ class BaseData(pd.DataFrame):
             geopy_rate_limiter = _import_optional(
                 "geopy.extra.rate_limiter", "geopy", "fill_missing_coordinates"
             )
-            geolocator = geopy_geocoders.Nominatim(user_agent = "data_cleaning_core_geocoder")
+            geolocator = geopy_geocoders.Nominatim(user_agent = user_agent)
             geocode = geopy_rate_limiter.RateLimiter(geolocator.geocode, min_delay_seconds=1)
 
             for i, query in enumerate(queries_to_fetch):
@@ -1600,31 +1648,31 @@ class BaseData(pd.DataFrame):
                             break
 
                         if ',' in current_search:
-                            current_search = current_search.rsplit(',', 1)[1].strip()
+                            current_search = current_search.split(',', 1)[1].strip()
                         else:
                             break
 
                     if location:
                         current_cache[query] = (location.latitude, location.longitude)
 
-                        cache_updated = True
-
                     else:
-                        print(f"Location not found for '{query}'. Not caching.")
-                        pass
+                        current_cache[query] = None
+                        logger.info("Location not found for '%s'. Cached as not found.", query)
+
+                    cache_updated = True
 
                     if (i + 1) % save_every == 0:
                         self.cache_manager.save_function_cache(func_name)
-                        print(f"Checkpoint: Safely saved {i + 1} / {num_of_queries} locations to cache...")
+                        logger.info("Checkpoint: Safely saved %s / %s locations to cache...", i + 1, num_of_queries)
 
                 except Exception as e:
-                    print(f"Failed to geocode: '{query}'. Skipping cache for this item. Error: {e}.")
+                    logger.warning("Failed to geocode: '%s'. Skipping cache for this item. Error: %s", query, e)
                     continue
 
             if cache_updated:
                 self.cache_manager.save_function_cache(func_name)
 
-            print("All geocoding completed and safely cached!")
+            logger.info("All geocoding completed and safely cached!")
 
         mapped_coords = result[temp_query_col].map(current_cache)
 
@@ -1681,7 +1729,7 @@ class BaseData(pd.DataFrame):
         """
         required_cols = [country_col, year_col]
         if not all(col in self.columns for col in required_cols):
-            print(f"Warning: Missing required columns: {required_cols}. Skipping conversion.")
+            logger.warning("Missing required columns: %s. Skipping conversion.", required_cols)
 
             return self if not inplace else None
 
@@ -1689,7 +1737,7 @@ class BaseData(pd.DataFrame):
 
         valid_cols = [col for col in target_cols if col in result.columns]
         if not valid_cols:
-            print("Warning: No valid target columns found.")
+            logger.warning("No valid target columns found.")
 
             return None if inplace else result
 
@@ -1716,6 +1764,7 @@ class BaseData(pd.DataFrame):
             return None if inplace else result
 
         min_year_limit = int(valid_years.min())
+        current_year = time.localtime().tm_year
 
         rates_mapping = {}
 
@@ -1728,19 +1777,16 @@ class BaseData(pd.DataFrame):
                     country = pycountry.countries.search_fuzzy(c_name)[0]
                     country_alpha2 = country.alpha_2
 
-
                     currencies = babel_numbers.get_territory_currencies(country_alpha2)
 
-                    if currencies:
-                        curr_code = currencies[0]
-                        currency_cache[c_name] = curr_code
+                    curr_code = currencies[0] if currencies else None
 
-                        cache_updated = True
-                    else:
-                        curr_code = None
-
-                except:
+                except LookupError:
+                    # pycountry found no matching country; remember the miss.
                     curr_code = None
+
+                currency_cache[c_name] = curr_code
+                cache_updated = True
 
 
             rate = None
@@ -1765,8 +1811,13 @@ class BaseData(pd.DataFrame):
                         if rate:
                             break
 
+                        if rate_key in rates_cache:
+                            # A past year already known to have no data.
+                            current_lookback_year -= 1
+                            continue
+
                         try:
-                            print(f"Fetching rate for {curr_code} in {y_str}...")
+                            logger.info("Fetching rate for %s in %s...", curr_code, y_str)
 
                             ticker = yfinance.Ticker(f"{curr_code}=X")
                             hist = ticker.history(start = f"{y_str}-01-01", end = f"{y_str}-12-31")
@@ -1778,8 +1829,14 @@ class BaseData(pd.DataFrame):
                                 cache_updated = True
                                 break
 
-                        except:
-                            pass
+                            if current_lookback_year < current_year:
+                                # Past years will not gain data later, so cache the miss.
+                                rates_cache[rate_key] = None
+                                cache_updated = True
+
+                        except Exception as e:
+                            # Network or service errors are transient; do not cache them.
+                            logger.warning("Failed to fetch rate for %s in %s: %s", curr_code, y_str, e)
 
                         current_lookback_year -= 1
 
@@ -1792,7 +1849,7 @@ class BaseData(pd.DataFrame):
         if not rates_df.empty:
             rates_df.columns = [country_col, year_col, '_conversion_rate']
 
-            temp_df = result.reset_index().merge(rates_df, on=[country_col, year_col], how = 'left').set_index('index')
+            temp_df = _left_merge_aligned(result, rates_df, [country_col, year_col])
 
             for col in valid_cols:
                 col_name = f"{col}_usd" if new_cols else col
@@ -1835,7 +1892,7 @@ class BaseData(pd.DataFrame):
         """
 
         if not hierarchy_cols:
-            print("Warning: No hierarchy columns provided.")
+            logger.warning("No hierarchy columns provided.")
             return self if not inplace else None
 
         result = self.copy() if not inplace else self
@@ -1851,7 +1908,6 @@ class BaseData(pd.DataFrame):
             level = 1
 
             while current_hierarchy:
-                group_name = " + ".join(current_hierarchy)
                 unprocessed_mask = (~processed_mask) & result[target_col].notna()
 
                 if unprocessed_mask.sum() == 0:
@@ -1876,11 +1932,11 @@ class BaseData(pd.DataFrame):
                     bounds['lower_bound'] = bounds['q1'] - 1.5 * iqr
                     bounds['upper_bound'] = bounds['q3'] + 1.5 * iqr
 
-                    merged_df = result.reset_index().merge(
+                    merged_df = _left_merge_aligned(
+                            result,
                             bounds.drop(columns = ['q1', 'q3']),
-                            on = current_hierarchy,
-                            how = 'left'
-                        ).set_index('index')
+                            current_hierarchy
+                        )
 
                     is_outlier = (
                         valid_group_mask & unprocessed_mask &
@@ -1933,11 +1989,11 @@ class BaseData(pd.DataFrame):
         """
 
         if not hierarchy_cols:
-            print("Warning: No hierarchy columns provided.")
+            logger.warning("No hierarchy columns provided.")
             return self if not inplace else None
 
         result = self.copy() if not inplace else self
-        outliers_to_drop = set()
+        drop_mask = np.zeros(len(result), dtype = bool)
 
         for target_col in target_cols:
             if target_col not in result.columns:
@@ -1973,11 +2029,11 @@ class BaseData(pd.DataFrame):
                     bounds['lower_bound'] = bounds['q1'] - 1.5 * iqr
                     bounds['upper_bound'] = bounds['q3'] + 1.5 * iqr
 
-                    merged_df = result.reset_index().merge(
+                    merged_df = _left_merge_aligned(
+                            result,
                             bounds.drop(columns = ['q1', 'q3']),
-                            on = current_hierarchy,
-                            how = 'left'
-                        ).set_index('index')
+                            current_hierarchy
+                        )
 
                     is_outlier = (
                         valid_group_mask & unprocessed_mask &
@@ -1990,15 +2046,19 @@ class BaseData(pd.DataFrame):
                     col_outliers_count += new_outliers_count
 
                     if new_outliers_count > 0:
-                        outliers_to_drop.update(result[is_outlier].index)
+                        drop_mask |= is_outlier.to_numpy(dtype = bool)
 
                 processed_mask = processed_mask | valid_group_mask
 
                 current_hierarchy.pop()
                 level += 1
 
-        if outliers_to_drop:
-            result.drop(index = list(outliers_to_drop), inplace = True)
+        if drop_mask.any():
+            # Drop by position so a duplicated index label never removes its twin row.
+            original_index = result.index
+            result.index = pd.RangeIndex(len(result))
+            result.drop(index = np.flatnonzero(drop_mask), inplace = True)
+            result.index = original_index[~drop_mask]
 
         return None if inplace else result
 
@@ -2047,13 +2107,14 @@ class BaseData(pd.DataFrame):
 
         valid_cols = [col for col in target_cols if col in result.columns]
         if not valid_cols:
-            print("Warning: No valid target columns found for imputation.")
+            logger.warning("No valid target columns found for imputation.")
             return None if inplace else result
 
         strategy = str(strategy).lower()
         if strategy not in ['median', 'mean', 'mode', 'mod']:
-            print(f"Error: Invalid strategy '{strategy}'.")
-            return None if inplace else result
+            raise ValueError(
+                f"Invalid strategy '{strategy}'. Use 'median', 'mean', or 'mode'."
+            )
 
         if isinstance(hierarchy_cols, str):
             hierarchy_cols = [hierarchy_cols]
@@ -2088,7 +2149,7 @@ class BaseData(pd.DataFrame):
 
                     modes_df = counts.drop_duplicates(subset = current_group).rename(columns = {col: '_mode_val'})
 
-                    temp_df = result.reset_index().merge(modes_df[current_group + ['_mode_val']], on = current_group, how = 'left').set_index('index')
+                    temp_df = _left_merge_aligned(result, modes_df[current_group + ['_mode_val']], current_group)
                     result[col] = result[col].fillna(temp_df['_mode_val'])
 
                 current_group.pop()
@@ -2209,16 +2270,15 @@ class BaseData(pd.DataFrame):
             if normalized_strategy == 'mod':
                 normalized_strategy = 'mode'
             if normalized_strategy not in ['median', 'mean', 'mode']:
-                print(f"Error: Invalid strategy '{normalized_strategy}'.")
-                if default_output:
-                    return _convert_default_output(stats_df, resolved_output_type)
-                return _convert_output(stats_df, resolved_output_type)
+                raise ValueError(
+                    f"Invalid strategy '{normalized_strategy}'. Use 'median', 'mean', or 'mode'."
+                )
             if normalized_strategy not in canonical_strategies:
                 canonical_strategies.append(normalized_strategy)
 
         valid_cols = list(dict.fromkeys(col for col in target_cols if col in self.columns))
         if not valid_cols:
-            print("Warning: No valid target columns found for statistics extraction.")
+            logger.warning("No valid target columns found for statistics extraction.")
             if default_output:
                 return _convert_default_output(stats_df, resolved_output_type)
             return _convert_output(stats_df, resolved_output_type)
@@ -2410,7 +2470,7 @@ class BaseData(pd.DataFrame):
         result = self.copy() if not inplace else self
 
         combined_series = result[valid_sources[0]].fillna('').astype(str)
-        
+
         if len(valid_sources) > 1:
             for col in valid_sources[1:]:
                 combined_series += " " + result[col].fillna('').astype(str)
@@ -2553,30 +2613,22 @@ class BaseData(pd.DataFrame):
             ignored_terms.update(str(term).strip().lower() for term in noisey_terms if str(term).strip())
 
         if exclude_pos is None:
-            exclude_pos = set() 
+            exclude_pos = set()
 
         elif isinstance(exclude_pos, str):
             exclude_pos = {exclude_pos.strip().upper()} if exclude_pos.strip() else set()
-        
+
         else:
             exclude_pos = {str(pos).strip().upper() for pos in exclude_pos}
 
         self._require_positive_int(save_every, "save_every")
 
         if not target_cols_and_json_keys:
-            print("Error: You must provide at least one target column and JSON key via kwargs.")
-
-            return None if inplace else self.copy()
+            raise ValueError("Provide at least one target column and JSON key as keyword arguments.")
 
         if isinstance(lexicon_source, (str, os.PathLike)):
-            try:
-                with open(os.fspath(lexicon_source), 'r', encoding = 'utf-8') as f:
-                    lexicon_data = json.load(f)
-
-            except Exception as e:
-                print(f"Error loading JSON file: {e}")
-
-                return None if inplace else self.copy()
+            with open(os.fspath(lexicon_source), encoding = 'utf-8') as f:
+                lexicon_data = json.load(f)
         else:
             lexicon_data = lexicon_source
 
@@ -2625,17 +2677,15 @@ class BaseData(pd.DataFrame):
                 term_dict[target_col] = list(extracted_terms)
 
             else:
-                print(f"Warning: No data found for keys '{keys_to_match}'. Skipping '{target_col}'.")
+                logger.warning("No data found for keys '%s'. Skipping '%s'.", keys_to_match, target_col)
 
         if not term_dict:
-            print("Error: No valid terms extracted from any specified JSON keys.")
-
-            return None if inplace else self.copy()
+            raise ValueError("No valid terms were extracted from the requested lexicon keys.")
 
 
         valid_sources = [col for col in source_cols if col in self.columns]
         if not valid_sources:
-            print("Warning: No valid source columns found.")
+            logger.warning("No valid source columns found.")
 
             return None if inplace else self.copy()
 
@@ -2650,7 +2700,7 @@ class BaseData(pd.DataFrame):
         all_valid_texts = combined_text[valid_mask].unique().tolist()
 
         if not all_valid_texts:
-            print("No valid text found in the specified columns.")
+            logger.warning("No valid text found in the specified columns.")
             return None if inplace else result
 
 
@@ -2673,26 +2723,12 @@ class BaseData(pd.DataFrame):
             matcher_module = _import_optional(
                 "spacy.matcher", "spacy", "extract_entities_nlp"
             )
-            print(f"Loading NLP Model and building Multi-Label Matcher...")
+            logger.info("Loading NLP Model and building Multi-Label Matcher...")
 
             if not isinstance(spacy_model, (str, os.PathLike)) or not os.fspath(spacy_model).strip():
-                print("Error: spacy_model must be a non-empty model name or path.")
+                raise ValueError("spacy_model must be a non-empty model name or path.")
 
-                for col in term_dict.keys():
-                    result[col] = [[] for _ in range(len(result))]
-
-                return None if inplace else result
-
-            try:
-                nlp = spacy.load(os.fspath(spacy_model))
-
-            except OSError as e:
-                print(f"Error loading spaCy model '{spacy_model}': {e}")
-
-                for col in term_dict.keys():
-                    result[col] = [[] for _ in range(len(result))]
-
-                return None if inplace else result
+            nlp = spacy.load(os.fspath(spacy_model))
 
             matcher = matcher_module.Matcher(nlp.vocab)
 
@@ -2718,11 +2754,11 @@ class BaseData(pd.DataFrame):
                     matcher.add(col_name, all_patterns)
 
             num_texts = len(texts_to_process)
-            print(f"Extracting smart entities from {num_texts} rows simultaneously...")
+            logger.info("Extracting smart entities from %s rows simultaneously...", num_texts)
 
             cache_updated = False
 
-            for i, doc in enumerate(nlp.pipe(texts_to_process, batch_size = 100)):
+            for i, doc in enumerate(nlp.pipe(texts_to_process, batch_size = 100, disable = ["parser", "ner"])):
                 original_text = texts_to_process[i]
                 found_entities = {col: set() for col in term_dict.keys()}
 
@@ -2756,21 +2792,21 @@ class BaseData(pd.DataFrame):
                     cache_updated = True
 
                 except Exception as e:
-                    print(f"Error processing text snippet: {e}")
+                    logger.warning("Error processing text snippet: %s", e)
 
                 if (i + 1) % save_every == 0 and cache_updated:
                     self.cache_manager.save_function_cache(func_name)
 
-                    print(f"Checkpoint: Safely saved {i + 1} / {num_texts}...")
+                    logger.info("Checkpoint: Safely saved %s / %s...", i + 1, num_texts)
 
                     cache_updated = False
 
             if cache_updated:
                 self.cache_manager.save_function_cache(func_name)
 
-                print("All NLP extraction completed and safely cached!")
+                logger.info("All NLP extraction completed and safely cached!")
         else:
-            print("All requested data is already cached. No NLP processing needed.")
+            logger.info("All requested data is already cached. No NLP processing needed.")
 
         for col in term_dict.keys():
             result[col] = [caches[col].get(text, []) for text in combined_text]
@@ -2816,9 +2852,7 @@ class BaseData(pd.DataFrame):
         file_path = os.fspath(file_path).strip() if file_path is not None else ""
 
         if not file_path:
-            print("Error: Missing file_path.")
-
-            return None
+            raise ValueError("file_path cannot be empty.")
 
         export_df = self.copy()
 
@@ -2834,35 +2868,50 @@ class BaseData(pd.DataFrame):
             if append:
                 try:
                     existing_df = pd.read_json(file_path, orient = orient)
-                    combined_df = pd.concat([existing_df, export_df], ignore_index = True)
 
-                    initial_count = len(combined_df)
-                    combined_df.drop_duplicates(inplace = True)
-                    duplicates_removed = initial_count - len(combined_df)
+                except ValueError as e:
+                    # Overwriting here would silently destroy the existing file.
+                    raise ValueError(
+                        f"Cannot append to '{file_path}': it is not readable as orient='{orient}' JSON."
+                    ) from e
 
-                    export_df = combined_df
-                    is_append_successful = True
+                combined_df = pd.concat([existing_df, export_df], ignore_index = True)
 
-                except Exception as e:
-                    print(f"[WARNING] Append failed ({e}). Falling back to overwrite.")
+                initial_count = len(combined_df)
 
-                    append = False
+                try:
+                    duplicate_mask = combined_df.duplicated()
+
+                except TypeError:
+                    # Lists and dicts are unhashable, so compare object columns by a JSON key.
+                    dedupe_view = combined_df.copy(deep = False)
+
+                    for col in dedupe_view.select_dtypes(include = 'object').columns:
+                        dedupe_view[col] = dedupe_view[col].map(_dedupe_key)
+
+                    duplicate_mask = dedupe_view.duplicated()
+
+                combined_df = combined_df[~duplicate_mask].reset_index(drop = True)
+                duplicates_removed = initial_count - len(combined_df)
+
+                export_df = combined_df
+                is_append_successful = True
 
             else:
                 try:
                     json_str = export_df.to_json(orient = orient, force_ascii = force_ascii)
                     current_data = json.loads(json_str)
 
-                    with open(file_path, 'r', encoding = 'utf-8') as f:
+                    with open(file_path, encoding = 'utf-8') as f:
                         existing_data = json.load(f)
 
                     if current_data == existing_data:
-                        print(f" [SKIP] No changes detected. '{os.path.basename(file_path)}' is already up to date.")
+                        logger.info("[SKIP] No changes detected. '%s' is already up to date.", os.path.basename(file_path))
 
                         return None
 
                 except Exception as e:
-                    print(f"[WARNING] Could not read existing file for comparison ({e}). Overwriting...")
+                    logger.warning("Could not read existing file for comparison (%s). Overwriting...", e)
 
         output_dir = os.path.dirname(file_path)
 
@@ -2872,10 +2921,10 @@ class BaseData(pd.DataFrame):
         export_df.to_json(file_path, orient = orient, force_ascii = force_ascii, indent = indent)
 
         if is_append_successful:
-            print(f" [APPEND] Added {new_rows_count} new rows. Removed {duplicates_removed} duplicates. Total jobs: {len(export_df)}.")
+            logger.info("[APPEND] Added %s new rows. Removed %s duplicates. Total jobs: %s.", new_rows_count, duplicates_removed, len(export_df))
 
         else:
-            print(f" [OVERWRITE] Save completed successfully! Total rows: {len(export_df)}.")
+            logger.info("[OVERWRITE] Save completed successfully! Total rows: %s.", len(export_df))
 
         return None
 
@@ -2958,25 +3007,17 @@ class BaseData(pd.DataFrame):
         engine_kwargs = {}
 
         if not table_name:
-            print("Error: Missing table_name.")
-
-            return None
+            raise ValueError("table_name cannot be empty.")
 
         if if_exists not in ['fail', 'replace', 'append']:
-            print(f"Error: Invalid if_exists value '{if_exists}'. Use 'fail', 'replace', or 'append'.")
-
-            return None
+            raise ValueError(f"Invalid if_exists value '{if_exists}'. Use 'fail', 'replace', or 'append'.")
 
         if not db_type:
-            print("Error: Missing database_type.")
-
-            return None
+            raise ValueError("database_type cannot be empty.")
 
         if db_type.startswith('sqlite'):
             if not db_name:
-                print("Error: Missing database_name for SQLite.")
-
-                return None
+                raise ValueError("database_name is required for SQLite.")
 
             if db_name == ':memory:':
                 engine_url = "sqlite:///:memory:"
@@ -2986,14 +3027,10 @@ class BaseData(pd.DataFrame):
 
         elif 'mssql' in db_type or 'sqlserver' in db_type:
             if not all([db_user, db_pass, db_host, db_port, db_name]):
-                print("Error: Missing SQL Server credentials")
-
-                return None
+                raise ValueError("SQL Server needs database_user, database_password, database_host, database_port, and database_name.")
 
             if not db_driver:
-                print("Error: Missing database_driver for SQL Server connection.")
-
-                return None
+                raise ValueError("database_driver is required for SQL Server.")
 
             encoded_driver = urllib.parse.quote_plus(db_driver)
             encoded_user = urllib.parse.quote_plus(db_user)
@@ -3005,9 +3042,7 @@ class BaseData(pd.DataFrame):
         else:
 
             if not all([db_user, db_pass, db_host, db_port, db_name]):
-                print("Error: Missing database credentials")
-
-                return None
+                raise ValueError("database_user, database_password, database_host, database_port, and database_name are required.")
 
             encoded_user = urllib.parse.quote_plus(db_user)
             encoded_pass = urllib.parse.quote_plus(db_pass)
@@ -3016,17 +3051,16 @@ class BaseData(pd.DataFrame):
 
         sqlalchemy = _import_optional("sqlalchemy", "SQLAlchemy", "save_to_sql")
 
+        export_df = self.copy()
+
+        # Normalize timezone-aware datetimes for SQL drivers that do not accept timezone-aware pandas dtypes.
+        for col in export_df.select_dtypes(include = ['datetimetz']).columns:
+            export_df[col] = export_df[col].dt.tz_localize(None)
+
+        engine = sqlalchemy.create_engine(engine_url, **engine_kwargs)
+
         try:
-            export_df = self.copy()
-
-            # Normalize timezone-aware datetimes for SQL drivers that do not accept timezone-aware pandas dtypes.
-            for col in export_df.select_dtypes(include = ['datetimetz']).columns:
-                export_df[col] = export_df[col].dt.tz_localize(None)
-
-            engine = sqlalchemy.create_engine(engine_url, **engine_kwargs)
-
-
-            print(f"Pushing data to SQL table '{table_name}' at {db_host}...")
+            logger.info("Pushing data to SQL table '%s' at %s...", table_name, db_host)
 
             export_df.to_sql(
                 table_name,
@@ -3037,10 +3071,10 @@ class BaseData(pd.DataFrame):
                 chunksize = chunk_size if chunk_size else None
             )
 
-            print("Database save completed successfully!")
+            logger.info("Database save completed successfully!")
 
-        except Exception as e:
-            print(f"FATAL ERROR: Could not push to database. Reason: {e}")
+        finally:
+            engine.dispose()
 
         return None
 
@@ -3052,37 +3086,37 @@ class JsonFile(BaseData):
         data = None,
         json_file_path: str = None,
         key: str = None,
-        cache_dir: str = "Settings/Cache Data/Automated",
+        cache_dir: str | os.PathLike | None = None,
         *args,
         **kwargs
     ):
         if data is not None and json_file_path is None:
             if isinstance(data, (str, os.PathLike)):
                 path = os.fspath(data)
-                
+
                 if os.path.isfile(path):
                     json_file_path = path
                     data = None
-                
+
                 else:
                     raise FileNotFoundError(f"JSON file not found: {path}")
 
         if data is None and json_file_path is not None:
             path = os.fspath(json_file_path)
-            
+
             if not os.path.isfile(path):
                 raise FileNotFoundError(f"JSON file not found: {path}")
 
-            with open(path, "r", encoding = "utf-8") as file:
+            with open(path, encoding = "utf-8") as file:
                 raw_data = json.load(file)
 
             if key:
                 if not isinstance(raw_data, dict):
                     raise TypeError("A JSON key can only be selected from a dictionary payload.")
-                
+
                 if key not in raw_data:
                     raise KeyError(f"Key '{key}' was not found in JSON payload.")
-                
+
                 raw_data = raw_data[key]
 
             data = pd.json_normalize(raw_data)
@@ -3095,8 +3129,8 @@ class CsvFile(BaseData):
         self,
         data = None,
         csv_file_path: str = None,
-        cache_dir: str = "Settings/Cache Data/Automated",
-        read_kwargs: Optional[dict] = None,
+        cache_dir: str | os.PathLike | None = None,
+        read_kwargs: dict | None = None,
         *args,
         **kwargs
     ):
@@ -3106,17 +3140,17 @@ class CsvFile(BaseData):
         if data is not None and csv_file_path is None:
             if isinstance(data, (str, os.PathLike)):
                 path = os.fspath(data)
-                
+
                 if os.path.isfile(path):
                     csv_file_path = path
                     data = None
-                
+
                 else:
                     raise FileNotFoundError(f"CSV file not found: {path}")
 
         if data is None and csv_file_path is not None:
             path = os.fspath(csv_file_path)
-            
+
             if not os.path.isfile(path):
                 raise FileNotFoundError(f"CSV file not found: {path}")
 

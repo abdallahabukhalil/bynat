@@ -200,3 +200,126 @@ def test_translate_conditional_missing_langdetect_raises_documented_import_error
             number_of_samples=1,
         )
 
+
+
+def test_save_to_json_append_keeps_existing_rows_with_list_columns(tmp_path):
+    file_path = tmp_path / "out.json"
+
+    BaseData({"a": [1, 2], "tags": [["x"], ["y"]]}, cache_dir=tmp_path).save_to_json(file_path)
+    BaseData({"a": [2, 3], "tags": [["y"], ["z"]]}, cache_dir=tmp_path).save_to_json(
+        file_path, append=True
+    )
+
+    saved = json.loads(file_path.read_text(encoding="utf-8"))
+
+    assert saved == [
+        {"a": 1, "tags": ["x"]},
+        {"a": 2, "tags": ["y"]},
+        {"a": 3, "tags": ["z"]},
+    ]
+
+
+@pytest.mark.parametrize(
+    "index",
+    [
+        pd.Index(range(10, 16), name="row_id"),
+        pd.MultiIndex.from_tuples([("k", i) for i in range(6)], names=["k", "i"]),
+        pd.Index([0, 0, 1, 1, 2, 2]),
+    ],
+)
+def test_hierarchy_methods_support_named_multi_and_duplicate_indexes(tmp_path, index):
+    frame = BaseData(
+        {"g": ["a"] * 6, "v": [1.0, 2.0, 3.0, 4.0, 5.0, 100.0]},
+        index=index,
+        cache_dir=tmp_path,
+    )
+
+    handled = frame.handle_outliers("v", hierarchy_cols=["g"])
+    dropped = frame.drop_outliers("v", hierarchy_cols=["g"])
+
+    assert handled["v"].isna().tolist() == [False] * 5 + [True]
+    assert handled.index.equals(index)
+    assert dropped["v"].tolist() == [1.0, 2.0, 3.0, 4.0, 5.0]
+    assert dropped.index.equals(index[:5])
+
+    in_place = frame.copy()
+    assert in_place.drop_outliers("v", hierarchy_cols=["g"], inplace=True) is None
+    assert in_place.equals(dropped)
+
+    modes = BaseData(
+        {"g": ["a"] * 6, "c": ["x", "x", "y", None, "x", None]},
+        index=index,
+        cache_dir=tmp_path,
+    ).fill_missing("c", strategy="mode", hierarchy_cols=["g"])
+
+    assert modes["c"].tolist() == ["x", "x", "y", "x", "x", "x"]
+    assert modes.index.equals(index)
+
+
+
+def test_save_to_json_append_deduplicates_plain_columns_without_json_keys(tmp_path, monkeypatch):
+    import bynat.cleaning.Cleaning as cleaning
+
+    file_path = tmp_path / "out.json"
+    BaseData({"a": [1, 2], "b": ["x", "y"]}, cache_dir=tmp_path).save_to_json(file_path)
+
+    monkeypatch.setattr(cleaning, "_dedupe_key", lambda value: pytest.fail("fast path expected"))
+    BaseData({"a": [2, 3], "b": ["y", "z"]}, cache_dir=tmp_path).save_to_json(file_path, append=True)
+
+    assert json.loads(file_path.read_text(encoding="utf-8")) == [
+        {"a": 1, "b": "x"},
+        {"a": 2, "b": "y"},
+        {"a": 3, "b": "z"},
+    ]
+
+
+def test_fill_missing_rejects_unknown_strategy(tmp_path):
+    frame = BaseData({"g": ["a", "a"], "v": [1.0, None]}, cache_dir=tmp_path)
+
+    with pytest.raises(ValueError, match="Invalid strategy 'sum'"):
+        frame.fill_missing("v", strategy="sum", hierarchy_cols="g")
+
+
+def test_save_to_json_append_refuses_to_overwrite_unreadable_file(tmp_path):
+    file_path = tmp_path / "out.json"
+    file_path.write_text('{"not": "records"', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Cannot append"):
+        BaseData({"a": [1]}, cache_dir=tmp_path).save_to_json(file_path, append=True)
+
+    assert file_path.read_text(encoding="utf-8") == '{"not": "records"'
+
+
+def test_save_to_json_requires_file_path(tmp_path):
+    with pytest.raises(ValueError, match="file_path"):
+        BaseData({"a": [1]}, cache_dir=tmp_path).save_to_json("  ")
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"table_name": " "}, "table_name"),
+        ({"if_exists": "merge"}, "if_exists"),
+        ({"database_type": ""}, "database_type"),
+        ({"database_name": ""}, "SQLite"),
+        ({"database_type": "postgresql", "database_host": ""}, "are required"),
+        ({"database_type": "mssql+pyodbc", "database_user": "u", "database_password": "p",
+          "database_host": "h", "database_port": "1"}, "database_driver"),
+    ],
+)
+def test_save_to_sql_rejects_invalid_arguments_before_connecting(monkeypatch, tmp_path, kwargs, message):
+    monkeypatch.setitem(sys.modules, "sqlalchemy", None)
+    arguments = {
+        "table_name": "items",
+        "database_type": "sqlite",
+        "database_user": "",
+        "database_password": "",
+        "database_host": "",
+        "database_port": "",
+        "database_name": str(tmp_path / "out.db"),
+        "if_exists": "append",
+    }
+    arguments.update(kwargs)
+
+    with pytest.raises(ValueError, match=message):
+        BaseData({"a": [1]}, cache_dir=tmp_path).save_to_sql(**arguments)
