@@ -1,6 +1,7 @@
 import importlib
 import inspect
 import json
+import logging
 import os
 import re
 import time
@@ -12,6 +13,8 @@ import numpy as np
 import pandas as pd
 
 from bynat.caching import CacheManager
+
+logger = logging.getLogger(__name__)
 
 
 def _import_optional(module_name: str, distribution: str, feature: str):
@@ -129,13 +132,15 @@ class BaseData(pd.DataFrame):
         return type(self)
 
 
-    def __init__(self, data = None, cache_dir: str = "Settings/Cache Data/Automated", *args, **kwargs) -> None:
+    def __init__(self, data = None, cache_dir: str | os.PathLike | None = None, *args, **kwargs) -> None:
         """
         Initialize the custom dataframe from in-memory tabular data.
 
         Args:
             data: Optional tabular data passed directly to `pandas.DataFrame`.
-            cache_dir: Directory for caching data. Defaults to "Settings/Cache Data/Automated".
+            cache_dir: Directory for caching data. When None, uses the
+                `BYNAT_CACHE_DIR` environment variable if set, otherwise
+                "Settings/Cache Data/Automated".
             *args: Additional positional arguments forwarded to
                 `pandas.DataFrame`.
             **kwargs: Additional keyword arguments forwarded to
@@ -1287,7 +1292,7 @@ class BaseData(pd.DataFrame):
 
         if values_to_translate:
             num_of_values = len(values_to_translate)
-            print(f"preparing {num_of_values} values to be translated...")
+            logger.info("preparing %s values to be translated...", num_of_values)
 
             translator_module = _import_optional(
                 "deep_translator", "deep-translator", "translate_conditional_column"
@@ -1312,16 +1317,16 @@ class BaseData(pd.DataFrame):
 
                     if (i + 1) % save_every == 0:
                         self.cache_manager.save_function_cache(func_name)
-                        print(f"Checkpoint: Safely saved {i + 1} / {num_of_values} translations to cache...")
+                        logger.info("Checkpoint: Safely saved %s / %s translations to cache...", i + 1, num_of_values)
 
                 except Exception as e:
-                    print(f"Failed to translate: '{val}'. Skipping cache for this item. Error: {e}.")
+                    logger.warning("Failed to translate: '%s'. Skipping cache for this item. Error: %s", val, e)
                     continue
 
             if cache_updated:
                 self.cache_manager.save_function_cache(func_name)
 
-            print("All translations completed and safely cached!")
+            logger.info("All translations completed and safely cached!")
 
         unique_vals = result[target_col].dropna().unique()
 
@@ -1435,10 +1440,10 @@ class BaseData(pd.DataFrame):
 
                     if (i + 1) % save_every == 0:
                         self.cache_manager.save_function_cache(func_name)
-                        print(f"Checkpoint: Safely saved {i + 1} / {num_of_values} translations to cache...")
+                        logger.info("Checkpoint: Safely saved %s / %s translations to cache...", i + 1, num_of_values)
 
                 except Exception as e:
-                    print(f"Failed to translate: {val}. Skipping cache for this item. Error: {e}.")
+                    logger.warning("Failed to translate: %s. Skipping cache for this item. Error: %s", val, e)
 
                     continue
 
@@ -1564,14 +1569,14 @@ class BaseData(pd.DataFrame):
 
         required_cols = [lat_col, long_col]
         if not all(col in self.columns for col in required_cols):
-            print("Warning: Missing coordinate columns. Skipping geocoding.")
+            logger.warning("Missing coordinate columns. Skipping geocoding.")
             return self if not inplace else None
 
         result = self.copy() if not inplace else self
 
         valid_fallbacks = [col for col in fallback_cols if col in result.columns]
         if not valid_fallbacks:
-            print("Warning: No valid fallback columns found. Skipping geocoding.")
+            logger.warning("No valid fallback columns found. Skipping geocoding.")
             return None if inplace else result
 
         mask_missing = result[lat_col].isna() | result[long_col].isna()
@@ -1620,7 +1625,7 @@ class BaseData(pd.DataFrame):
             cache_updated = False
 
             num_of_queries = len(queries_to_fetch)
-            print(f"preparing {num_of_queries} locations to be geocoded...")
+            logger.info("preparing %s locations to be geocoded...", num_of_queries)
 
             geopy_geocoders = _import_optional(
                 "geopy.geocoders", "geopy", "fill_missing_coordinates"
@@ -1652,22 +1657,22 @@ class BaseData(pd.DataFrame):
 
                     else:
                         current_cache[query] = None
-                        print(f"Location not found for '{query}'. Cached as not found.")
+                        logger.info("Location not found for '%s'. Cached as not found.", query)
 
                     cache_updated = True
 
                     if (i + 1) % save_every == 0:
                         self.cache_manager.save_function_cache(func_name)
-                        print(f"Checkpoint: Safely saved {i + 1} / {num_of_queries} locations to cache...")
+                        logger.info("Checkpoint: Safely saved %s / %s locations to cache...", i + 1, num_of_queries)
 
                 except Exception as e:
-                    print(f"Failed to geocode: '{query}'. Skipping cache for this item. Error: {e}.")
+                    logger.warning("Failed to geocode: '%s'. Skipping cache for this item. Error: %s", query, e)
                     continue
 
             if cache_updated:
                 self.cache_manager.save_function_cache(func_name)
 
-            print("All geocoding completed and safely cached!")
+            logger.info("All geocoding completed and safely cached!")
 
         mapped_coords = result[temp_query_col].map(current_cache)
 
@@ -1724,7 +1729,7 @@ class BaseData(pd.DataFrame):
         """
         required_cols = [country_col, year_col]
         if not all(col in self.columns for col in required_cols):
-            print(f"Warning: Missing required columns: {required_cols}. Skipping conversion.")
+            logger.warning("Missing required columns: %s. Skipping conversion.", required_cols)
 
             return self if not inplace else None
 
@@ -1732,7 +1737,7 @@ class BaseData(pd.DataFrame):
 
         valid_cols = [col for col in target_cols if col in result.columns]
         if not valid_cols:
-            print("Warning: No valid target columns found.")
+            logger.warning("No valid target columns found.")
 
             return None if inplace else result
 
@@ -1812,7 +1817,7 @@ class BaseData(pd.DataFrame):
                             continue
 
                         try:
-                            print(f"Fetching rate for {curr_code} in {y_str}...")
+                            logger.info("Fetching rate for %s in %s...", curr_code, y_str)
 
                             ticker = yfinance.Ticker(f"{curr_code}=X")
                             hist = ticker.history(start = f"{y_str}-01-01", end = f"{y_str}-12-31")
@@ -1831,7 +1836,7 @@ class BaseData(pd.DataFrame):
 
                         except Exception as e:
                             # Network or service errors are transient; do not cache them.
-                            print(f"Failed to fetch rate for {curr_code} in {y_str}: {e}")
+                            logger.warning("Failed to fetch rate for %s in %s: %s", curr_code, y_str, e)
 
                         current_lookback_year -= 1
 
@@ -1887,7 +1892,7 @@ class BaseData(pd.DataFrame):
         """
 
         if not hierarchy_cols:
-            print("Warning: No hierarchy columns provided.")
+            logger.warning("No hierarchy columns provided.")
             return self if not inplace else None
 
         result = self.copy() if not inplace else self
@@ -1984,7 +1989,7 @@ class BaseData(pd.DataFrame):
         """
 
         if not hierarchy_cols:
-            print("Warning: No hierarchy columns provided.")
+            logger.warning("No hierarchy columns provided.")
             return self if not inplace else None
 
         result = self.copy() if not inplace else self
@@ -2102,13 +2107,14 @@ class BaseData(pd.DataFrame):
 
         valid_cols = [col for col in target_cols if col in result.columns]
         if not valid_cols:
-            print("Warning: No valid target columns found for imputation.")
+            logger.warning("No valid target columns found for imputation.")
             return None if inplace else result
 
         strategy = str(strategy).lower()
         if strategy not in ['median', 'mean', 'mode', 'mod']:
-            print(f"Error: Invalid strategy '{strategy}'.")
-            return None if inplace else result
+            raise ValueError(
+                f"Invalid strategy '{strategy}'. Use 'median', 'mean', or 'mode'."
+            )
 
         if isinstance(hierarchy_cols, str):
             hierarchy_cols = [hierarchy_cols]
@@ -2264,16 +2270,15 @@ class BaseData(pd.DataFrame):
             if normalized_strategy == 'mod':
                 normalized_strategy = 'mode'
             if normalized_strategy not in ['median', 'mean', 'mode']:
-                print(f"Error: Invalid strategy '{normalized_strategy}'.")
-                if default_output:
-                    return _convert_default_output(stats_df, resolved_output_type)
-                return _convert_output(stats_df, resolved_output_type)
+                raise ValueError(
+                    f"Invalid strategy '{normalized_strategy}'. Use 'median', 'mean', or 'mode'."
+                )
             if normalized_strategy not in canonical_strategies:
                 canonical_strategies.append(normalized_strategy)
 
         valid_cols = list(dict.fromkeys(col for col in target_cols if col in self.columns))
         if not valid_cols:
-            print("Warning: No valid target columns found for statistics extraction.")
+            logger.warning("No valid target columns found for statistics extraction.")
             if default_output:
                 return _convert_default_output(stats_df, resolved_output_type)
             return _convert_output(stats_df, resolved_output_type)
@@ -2619,19 +2624,11 @@ class BaseData(pd.DataFrame):
         self._require_positive_int(save_every, "save_every")
 
         if not target_cols_and_json_keys:
-            print("Error: You must provide at least one target column and JSON key via kwargs.")
-
-            return None if inplace else self.copy()
+            raise ValueError("Provide at least one target column and JSON key as keyword arguments.")
 
         if isinstance(lexicon_source, (str, os.PathLike)):
-            try:
-                with open(os.fspath(lexicon_source), encoding = 'utf-8') as f:
-                    lexicon_data = json.load(f)
-
-            except Exception as e:
-                print(f"Error loading JSON file: {e}")
-
-                return None if inplace else self.copy()
+            with open(os.fspath(lexicon_source), encoding = 'utf-8') as f:
+                lexicon_data = json.load(f)
         else:
             lexicon_data = lexicon_source
 
@@ -2680,17 +2677,15 @@ class BaseData(pd.DataFrame):
                 term_dict[target_col] = list(extracted_terms)
 
             else:
-                print(f"Warning: No data found for keys '{keys_to_match}'. Skipping '{target_col}'.")
+                logger.warning("No data found for keys '%s'. Skipping '%s'.", keys_to_match, target_col)
 
         if not term_dict:
-            print("Error: No valid terms extracted from any specified JSON keys.")
-
-            return None if inplace else self.copy()
+            raise ValueError("No valid terms were extracted from the requested lexicon keys.")
 
 
         valid_sources = [col for col in source_cols if col in self.columns]
         if not valid_sources:
-            print("Warning: No valid source columns found.")
+            logger.warning("No valid source columns found.")
 
             return None if inplace else self.copy()
 
@@ -2705,7 +2700,7 @@ class BaseData(pd.DataFrame):
         all_valid_texts = combined_text[valid_mask].unique().tolist()
 
         if not all_valid_texts:
-            print("No valid text found in the specified columns.")
+            logger.warning("No valid text found in the specified columns.")
             return None if inplace else result
 
 
@@ -2728,26 +2723,12 @@ class BaseData(pd.DataFrame):
             matcher_module = _import_optional(
                 "spacy.matcher", "spacy", "extract_entities_nlp"
             )
-            print("Loading NLP Model and building Multi-Label Matcher...")
+            logger.info("Loading NLP Model and building Multi-Label Matcher...")
 
             if not isinstance(spacy_model, (str, os.PathLike)) or not os.fspath(spacy_model).strip():
-                print("Error: spacy_model must be a non-empty model name or path.")
+                raise ValueError("spacy_model must be a non-empty model name or path.")
 
-                for col in term_dict.keys():
-                    result[col] = [[] for _ in range(len(result))]
-
-                return None if inplace else result
-
-            try:
-                nlp = spacy.load(os.fspath(spacy_model))
-
-            except OSError as e:
-                print(f"Error loading spaCy model '{spacy_model}': {e}")
-
-                for col in term_dict.keys():
-                    result[col] = [[] for _ in range(len(result))]
-
-                return None if inplace else result
+            nlp = spacy.load(os.fspath(spacy_model))
 
             matcher = matcher_module.Matcher(nlp.vocab)
 
@@ -2773,7 +2754,7 @@ class BaseData(pd.DataFrame):
                     matcher.add(col_name, all_patterns)
 
             num_texts = len(texts_to_process)
-            print(f"Extracting smart entities from {num_texts} rows simultaneously...")
+            logger.info("Extracting smart entities from %s rows simultaneously...", num_texts)
 
             cache_updated = False
 
@@ -2811,21 +2792,21 @@ class BaseData(pd.DataFrame):
                     cache_updated = True
 
                 except Exception as e:
-                    print(f"Error processing text snippet: {e}")
+                    logger.warning("Error processing text snippet: %s", e)
 
                 if (i + 1) % save_every == 0 and cache_updated:
                     self.cache_manager.save_function_cache(func_name)
 
-                    print(f"Checkpoint: Safely saved {i + 1} / {num_texts}...")
+                    logger.info("Checkpoint: Safely saved %s / %s...", i + 1, num_texts)
 
                     cache_updated = False
 
             if cache_updated:
                 self.cache_manager.save_function_cache(func_name)
 
-                print("All NLP extraction completed and safely cached!")
+                logger.info("All NLP extraction completed and safely cached!")
         else:
-            print("All requested data is already cached. No NLP processing needed.")
+            logger.info("All requested data is already cached. No NLP processing needed.")
 
         for col in term_dict.keys():
             result[col] = [caches[col].get(text, []) for text in combined_text]
@@ -2871,9 +2852,7 @@ class BaseData(pd.DataFrame):
         file_path = os.fspath(file_path).strip() if file_path is not None else ""
 
         if not file_path:
-            print("Error: Missing file_path.")
-
-            return None
+            raise ValueError("file_path cannot be empty.")
 
         export_df = self.copy()
 
@@ -2889,31 +2868,34 @@ class BaseData(pd.DataFrame):
             if append:
                 try:
                     existing_df = pd.read_json(file_path, orient = orient)
-                    combined_df = pd.concat([existing_df, export_df], ignore_index = True)
 
-                    initial_count = len(combined_df)
-                    try:
-                        duplicate_mask = combined_df.duplicated()
+                except ValueError as e:
+                    # Overwriting here would silently destroy the existing file.
+                    raise ValueError(
+                        f"Cannot append to '{file_path}': it is not readable as orient='{orient}' JSON."
+                    ) from e
 
-                    except TypeError:
-                        # Lists and dicts are unhashable, so compare object columns by a JSON key.
-                        dedupe_view = combined_df.copy(deep = False)
+                combined_df = pd.concat([existing_df, export_df], ignore_index = True)
 
-                        for col in dedupe_view.select_dtypes(include = 'object').columns:
-                            dedupe_view[col] = dedupe_view[col].map(_dedupe_key)
+                initial_count = len(combined_df)
 
-                        duplicate_mask = dedupe_view.duplicated()
+                try:
+                    duplicate_mask = combined_df.duplicated()
 
-                    combined_df = combined_df[~duplicate_mask].reset_index(drop = True)
-                    duplicates_removed = initial_count - len(combined_df)
+                except TypeError:
+                    # Lists and dicts are unhashable, so compare object columns by a JSON key.
+                    dedupe_view = combined_df.copy(deep = False)
 
-                    export_df = combined_df
-                    is_append_successful = True
+                    for col in dedupe_view.select_dtypes(include = 'object').columns:
+                        dedupe_view[col] = dedupe_view[col].map(_dedupe_key)
 
-                except Exception as e:
-                    print(f"[WARNING] Append failed ({e}). Falling back to overwrite.")
+                    duplicate_mask = dedupe_view.duplicated()
 
-                    append = False
+                combined_df = combined_df[~duplicate_mask].reset_index(drop = True)
+                duplicates_removed = initial_count - len(combined_df)
+
+                export_df = combined_df
+                is_append_successful = True
 
             else:
                 try:
@@ -2924,12 +2906,12 @@ class BaseData(pd.DataFrame):
                         existing_data = json.load(f)
 
                     if current_data == existing_data:
-                        print(f" [SKIP] No changes detected. '{os.path.basename(file_path)}' is already up to date.")
+                        logger.info("[SKIP] No changes detected. '%s' is already up to date.", os.path.basename(file_path))
 
                         return None
 
                 except Exception as e:
-                    print(f"[WARNING] Could not read existing file for comparison ({e}). Overwriting...")
+                    logger.warning("Could not read existing file for comparison (%s). Overwriting...", e)
 
         output_dir = os.path.dirname(file_path)
 
@@ -2939,10 +2921,10 @@ class BaseData(pd.DataFrame):
         export_df.to_json(file_path, orient = orient, force_ascii = force_ascii, indent = indent)
 
         if is_append_successful:
-            print(f" [APPEND] Added {new_rows_count} new rows. Removed {duplicates_removed} duplicates. Total jobs: {len(export_df)}.")
+            logger.info("[APPEND] Added %s new rows. Removed %s duplicates. Total jobs: %s.", new_rows_count, duplicates_removed, len(export_df))
 
         else:
-            print(f" [OVERWRITE] Save completed successfully! Total rows: {len(export_df)}.")
+            logger.info("[OVERWRITE] Save completed successfully! Total rows: %s.", len(export_df))
 
         return None
 
@@ -3025,25 +3007,17 @@ class BaseData(pd.DataFrame):
         engine_kwargs = {}
 
         if not table_name:
-            print("Error: Missing table_name.")
-
-            return None
+            raise ValueError("table_name cannot be empty.")
 
         if if_exists not in ['fail', 'replace', 'append']:
-            print(f"Error: Invalid if_exists value '{if_exists}'. Use 'fail', 'replace', or 'append'.")
-
-            return None
+            raise ValueError(f"Invalid if_exists value '{if_exists}'. Use 'fail', 'replace', or 'append'.")
 
         if not db_type:
-            print("Error: Missing database_type.")
-
-            return None
+            raise ValueError("database_type cannot be empty.")
 
         if db_type.startswith('sqlite'):
             if not db_name:
-                print("Error: Missing database_name for SQLite.")
-
-                return None
+                raise ValueError("database_name is required for SQLite.")
 
             if db_name == ':memory:':
                 engine_url = "sqlite:///:memory:"
@@ -3053,14 +3027,10 @@ class BaseData(pd.DataFrame):
 
         elif 'mssql' in db_type or 'sqlserver' in db_type:
             if not all([db_user, db_pass, db_host, db_port, db_name]):
-                print("Error: Missing SQL Server credentials")
-
-                return None
+                raise ValueError("SQL Server needs database_user, database_password, database_host, database_port, and database_name.")
 
             if not db_driver:
-                print("Error: Missing database_driver for SQL Server connection.")
-
-                return None
+                raise ValueError("database_driver is required for SQL Server.")
 
             encoded_driver = urllib.parse.quote_plus(db_driver)
             encoded_user = urllib.parse.quote_plus(db_user)
@@ -3072,9 +3042,7 @@ class BaseData(pd.DataFrame):
         else:
 
             if not all([db_user, db_pass, db_host, db_port, db_name]):
-                print("Error: Missing database credentials")
-
-                return None
+                raise ValueError("database_user, database_password, database_host, database_port, and database_name are required.")
 
             encoded_user = urllib.parse.quote_plus(db_user)
             encoded_pass = urllib.parse.quote_plus(db_pass)
@@ -3083,17 +3051,16 @@ class BaseData(pd.DataFrame):
 
         sqlalchemy = _import_optional("sqlalchemy", "SQLAlchemy", "save_to_sql")
 
+        export_df = self.copy()
+
+        # Normalize timezone-aware datetimes for SQL drivers that do not accept timezone-aware pandas dtypes.
+        for col in export_df.select_dtypes(include = ['datetimetz']).columns:
+            export_df[col] = export_df[col].dt.tz_localize(None)
+
+        engine = sqlalchemy.create_engine(engine_url, **engine_kwargs)
+
         try:
-            export_df = self.copy()
-
-            # Normalize timezone-aware datetimes for SQL drivers that do not accept timezone-aware pandas dtypes.
-            for col in export_df.select_dtypes(include = ['datetimetz']).columns:
-                export_df[col] = export_df[col].dt.tz_localize(None)
-
-            engine = sqlalchemy.create_engine(engine_url, **engine_kwargs)
-
-
-            print(f"Pushing data to SQL table '{table_name}' at {db_host}...")
+            logger.info("Pushing data to SQL table '%s' at %s...", table_name, db_host)
 
             export_df.to_sql(
                 table_name,
@@ -3104,10 +3071,10 @@ class BaseData(pd.DataFrame):
                 chunksize = chunk_size if chunk_size else None
             )
 
-            print("Database save completed successfully!")
+            logger.info("Database save completed successfully!")
 
-        except Exception as e:
-            print(f"FATAL ERROR: Could not push to database. Reason: {e}")
+        finally:
+            engine.dispose()
 
         return None
 
@@ -3119,7 +3086,7 @@ class JsonFile(BaseData):
         data = None,
         json_file_path: str = None,
         key: str = None,
-        cache_dir: str = "Settings/Cache Data/Automated",
+        cache_dir: str | os.PathLike | None = None,
         *args,
         **kwargs
     ):
@@ -3162,7 +3129,7 @@ class CsvFile(BaseData):
         self,
         data = None,
         csv_file_path: str = None,
-        cache_dir: str = "Settings/Cache Data/Automated",
+        cache_dir: str | os.PathLike | None = None,
         read_kwargs: dict | None = None,
         *args,
         **kwargs

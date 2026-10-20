@@ -1,9 +1,24 @@
 import json
+import logging
 import os
 import tempfile
+import time
 from os import PathLike
 
-__all__ = ['CacheManager']
+__all__ = ['CacheManager', 'CACHE_DIR_ENV_VAR', 'DEFAULT_CACHE_DIR']
+
+logger = logging.getLogger(__name__)
+
+CACHE_DIR_ENV_VAR = "BYNAT_CACHE_DIR"
+DEFAULT_CACHE_DIR = "Settings/Cache Data/Automated"
+
+
+def resolve_cache_dir(cache_dir: str | PathLike | None) -> str | PathLike:
+    """Return `cache_dir`, else `$BYNAT_CACHE_DIR`, else the legacy relative default."""
+    if cache_dir is not None:
+        return cache_dir
+
+    return os.environ.get(CACHE_DIR_ENV_VAR) or DEFAULT_CACHE_DIR
 
 
 
@@ -19,7 +34,7 @@ class CacheManager:
         column name or another logical cache bucket.
     """
 
-    def __init__(self, cache_dir: str | PathLike = "Settings/Cache Data/Automated"):
+    def __init__(self, cache_dir: str | PathLike | None = None):
         """
         Initialize the cache manager and resolve its storage directory.
 
@@ -28,13 +43,18 @@ class CacheManager:
         variables are expanded before the path is normalized.
 
         Args:
-            cache_dir (str | os.PathLike): Directory where JSON cache files are
-                stored. Defaults to `"Settings/Cache Data/Automated"`.
+            cache_dir (str | os.PathLike | None): Directory where JSON cache
+                files are stored. When None, the `BYNAT_CACHE_DIR` environment
+                variable is used if set, otherwise
+                `"Settings/Cache Data/Automated"` relative to the working
+                directory.
 
         Raises:
             TypeError: If `cache_dir` is not a string or path-like object.
             ValueError: If `cache_dir` is empty after normalization.
         """
+        cache_dir = resolve_cache_dir(cache_dir)
+
         if not isinstance(cache_dir, (str, PathLike)):
             raise TypeError("cache_dir must be a string or path-like object")
 
@@ -132,10 +152,34 @@ class CacheManager:
                     with open(file_path, encoding = 'utf-8') as cache:
                         loaded_cache = json.load(cache)
 
-                    self.caches[func_name] = loaded_cache if isinstance(loaded_cache, dict) else {}
+                    if not isinstance(loaded_cache, dict):
+                        raise ValueError("top-level JSON value is not an object")
 
-                except (json.JSONDecodeError, OSError) as e:
-                    print(f"Error: Cache file '{file_path}' is corrupted or unreadable. Starting with an empty cache.\n Details: {e}")
+                    self.caches[func_name] = loaded_cache
+
+                except ValueError as e:
+                    # JSONDecodeError and UnicodeDecodeError are ValueErrors. Keep the bad file for manual
+                    # recovery instead of letting the next save overwrite it.
+                    quarantine_path = f"{file_path}.corrupt.{int(time.time())}"
+
+                    try:
+                        os.replace(file_path, quarantine_path)
+                        location = f"moved it to '{quarantine_path}'"
+
+                    except OSError:
+                        location = "could not move it aside"
+
+                    logger.warning(
+                        "Cache file '%s' is corrupted; %s and started an empty cache. Details: %s",
+                        file_path, location, e
+                    )
+                    self.caches[func_name] = {}
+
+                except OSError as e:
+                    logger.warning(
+                        "Cache file '%s' is unreadable; starting with an empty in-memory cache. Details: %s",
+                        file_path, e
+                    )
                     self.caches[func_name] = {}
 
             else:
@@ -208,7 +252,7 @@ class CacheManager:
             temp_path = None
 
         except (TypeError, ValueError, OSError) as e:
-            print(f"Error: Could not save cache file '{file_path}'.\n Details: {e}")
+            logger.error("Could not save cache file '%s'. Details: %s", file_path, e)
 
         finally:
             if temp_path is not None and os.path.exists(temp_path):
@@ -233,7 +277,7 @@ class CacheManager:
             del func_cache[col_name]
             self.save_function_cache(func_name)
 
-            print(f"Cache for column '{col_name}' deleted from '{func_name}_cache.json'")
+            logger.info("Cache for column '%s' deleted from '%s_cache.json'", col_name, func_name)
 
         else:
-            print(f"No cache found for column '{col_name}' in '{func_name}_cache.json'")
+            logger.info("No cache found for column '%s' in '%s_cache.json'", col_name, func_name)
