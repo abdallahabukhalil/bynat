@@ -4,7 +4,7 @@
 
 ## Status
 
-Version `0.1.1` is the project version declared in `pyproject.toml`.
+Version `0.2.0` is the project version declared in `pyproject.toml`. See [CHANGELOG.md](CHANGELOG.md) for behavior changes since `0.1.1` and [ROADMAP.md](ROADMAP.md) for planned work.
 
 ## Installation
 
@@ -59,7 +59,7 @@ The subpackage `__init__.py` files re-export the names listed by each implementa
 
 ### `CacheManager`
 
-`CacheManager` manages JSON files named `<func_name>_cache.json` under `cache_dir`. Relative cache paths are resolved from the current working directory; `~` and environment variables are expanded. Cache directories are created when a cache is saved, not when the manager is constructed.
+`CacheManager` manages JSON files named `<func_name>_cache.json` under `cache_dir`. When `cache_dir` is omitted (here and in `BaseData`, `JsonFile`, and `CsvFile`), the `BYNAT_CACHE_DIR` environment variable is used if set, otherwise `Settings/Cache Data/Automated`. Relative cache paths are resolved from the current working directory; `~` and environment variables are expanded. Cache directories are created when a cache is saved, not when the manager is constructed.
 
 ```python
 from pathlib import Path
@@ -75,7 +75,7 @@ loaded = cache.load_function_cache("translate_categorical_column")
 assert loaded["status"]["pending"] == "Pending"
 ```
 
-Cache keys must be non-empty strings and cannot contain path separators. A corrupted or unreadable JSON cache is reported, then treated as an empty dictionary. JSON serialization errors and file-write errors are printed rather than raised by `save_function_cache`.
+Cache keys must be non-empty strings and cannot contain path separators. A cache file that is not a valid JSON object is renamed to `<name>.corrupt.<timestamp>` (so its data can be recovered by hand), logged as a warning, and treated as an empty dictionary. Saves are atomic: the JSON is written to a temporary file that replaces the old one. JSON serialization errors and file-write errors are logged rather than raised by `save_function_cache`, and the previous file is kept.
 
 ### CacheManager methods and parameters
 
@@ -83,8 +83,8 @@ Cache keys must be non-empty strings and cannot contain path separators. A corru
 | --- | --- | --- |
 | `load_function_cache(func_name)` | `func_name: str` | Load `<func_name>_cache.json`, or return/create an in-memory empty dictionary when it does not exist. |
 | `get_column_cache(func_name, col_name)` | `func_name: str`, `col_name: str` | Return/create a nested dictionary under `col_name`. |
-| `save_function_cache(func_name)` | `func_name: str` | Write the in-memory function cache as indented UTF-8 JSON. |
-| `delete_column_cache(func_name, col_name)` | `func_name: str`, `col_name: str` | Delete a nested bucket and save the function cache; print a message when the bucket is absent or deleted. |
+| `save_function_cache(func_name)` | `func_name: str` | Atomically write the in-memory function cache as indented UTF-8 JSON. |
+| `delete_column_cache(func_name, col_name)` | `func_name: str`, `col_name: str` | Delete a nested bucket and save the function cache; log an `INFO` message when the bucket is absent or deleted. |
 
 `_validate_cache_key` and `_get_file_path` are implementation helpers and are not part of the public API.
 
@@ -181,9 +181,9 @@ translated = records.translate_categorical_column(
 
 | Class | Constructor parameters | Behavior |
 | --- | --- | --- |
-| `BaseData` | `data=None`, `cache_dir="Settings/Cache Data/Automated"`, `*args`, `**kwargs` | Build a `pandas.DataFrame` subclass and attach a `CacheManager`. Extra arguments are forwarded to `pandas.DataFrame`. |
-| `JsonFile` | `data=None`, `json_file_path=None`, `key=None`, `cache_dir="Settings/Cache Data/Automated"`, `*args`, `**kwargs` | Read a JSON file, optionally select a dictionary key, and normalize the payload with `pandas.json_normalize`. A path passed through `data` is also recognized. |
-| `CsvFile` | `data=None`, `csv_file_path=None`, `cache_dir="Settings/Cache Data/Automated"`, `read_kwargs=None`, `*args`, `**kwargs` | Read a CSV file with `pandas.read_csv`; `read_kwargs` is forwarded to that function. A path passed through `data` is also recognized. |
+| `BaseData` | `data=None`, `cache_dir=None`, `*args`, `**kwargs` | Build a `pandas.DataFrame` subclass and attach a `CacheManager`. Extra arguments are forwarded to `pandas.DataFrame`. |
+| `JsonFile` | `data=None`, `json_file_path=None`, `key=None`, `cache_dir=None`, `*args`, `**kwargs` | Read a JSON file, optionally select a dictionary key, and normalize the payload with `pandas.json_normalize`. A path passed through `data` is also recognized. |
+| `CsvFile` | `data=None`, `csv_file_path=None`, `cache_dir=None`, `read_kwargs=None`, `*args`, `**kwargs` | Read a CSV file with `pandas.read_csv`; `read_kwargs` is forwarded to that function. A path passed through `data` is also recognized. |
 
 ### BaseData methods and parameters
 
@@ -216,26 +216,36 @@ translated = records.translate_categorical_column(
 | `save_to_json` | `file_path`, `orient="records"`, `append=False`, `force_ascii=False`, `indent=4` | Write JSON only when changed, or append/deduplicate existing JSON rows. Rows with list or dictionary values are deduplicated by their JSON content. Datetime columns are formatted as `%Y-%m-%d %H:%M:%S`. |
 | `save_to_sql` | `table_name`, `database_type`, `database_user`, `database_password`, `database_host`, `database_port`, `database_name`, `database_driver=None`, `columns_types=None`, `chunk_size=None`, `fast_executemany=False`, `if_exists="append"`, `index=False` | Build a SQLAlchemy connection URL and write the frame with `DataFrame.to_sql`. SQLite uses `database_name` as a path; SQL Server requires `database_driver`. |
 
-Most methods silently skip missing source/target columns and return the original or copied frame, depending on `inplace`. Check the method's return value when chaining operations.
+Most methods skip missing source/target columns with a logged warning and return the original or copied frame, depending on `inplace`. Check the method's return value when chaining operations. Invalid arguments that would otherwise produce silently wrong results raise instead: an unknown `strategy`, an empty `file_path`, invalid `save_to_sql` connection settings, or an unusable `extract_entities_nlp` configuration.
 
 ## Limitations and operational notes
 
 - Optional integrations are lazy-loaded, so basic `bynat.cleaning` imports and core dataframe methods work with only `numpy` and `pandas`. Methods that need an absent integration raise a clear `ImportError` when called.
 - Translation uses `deep-translator` and may make external requests. Geocoding uses Nominatim through `geopy` with a one-second rate limit. Currency conversion uses Yahoo Finance history through `yfinance`. These services can fail, rate-limit, or change results; cached values persist locally as JSON.
-- NLP extraction requires a compatible spaCy model installed separately. A missing or unloadable model causes the method to print an error and fill requested output columns with empty lists.
-- `save_to_sql` catches database exceptions and prints an error instead of re-raising them. It also receives database credentials as ordinary arguments; do not hard-code secrets in application code.
+- NLP extraction requires a compatible spaCy model installed separately. A missing or unloadable model raises spaCy's `OSError`.
+- `save_to_sql` lets database exceptions propagate to the caller and always disposes its engine. It receives database credentials as ordinary arguments; do not hard-code secrets in application code.
 - Cache files are ordinary JSON. Each save writes a temporary file and atomically replaces the old one, so an interrupted save never leaves a truncated cache. Files are not locked: concurrent writers to the same cache can still overwrite each other's updates. Values must be JSON serializable.
-- The implementation uses `print` for warnings, progress, and errors rather than a logging interface.
+- Messages go through the standard `logging` module under the `bynat` logger. Skipped columns and failed lookups are `WARNING`s and appear on stderr by default; progress and checkpoints are `INFO`. To see progress, or to silence warnings:
+
+  ```python
+  import logging
+
+  logging.basicConfig(level=logging.INFO)              # show progress
+  logging.getLogger("bynat").setLevel(logging.ERROR)   # or hide warnings
+  ```
 - The package's top-level namespace is intentionally empty; `from bynat import BaseData` is not supported by the current `__init__.py`.
 
 ## Development and verification
 
-The repository test suite uses `pytest` and avoids network access, secrets, user files, optional integrations, and external services:
+The repository test suite uses `pytest` and avoids network access, secrets, user files, and external services. Network-backed integrations (translation, geocoding, exchange rates, spaCy) are exercised with fake modules:
 
 ```bash
 python -m pytest -q
 python -m compileall -q bynat
+ruff check bynat tests
 ```
+
+Install `".[categorization,sql]"` to also run the tests that use the real `pyahocorasick` and SQLAlchemy/SQLite; they are skipped otherwise. CI runs the suite on Ubuntu and Windows with Python 3.11 and 3.13, plus Ruff and an extras job.
 
 Building a wheel or source archive requires the configured setuptools build backend and wheel tooling.
 

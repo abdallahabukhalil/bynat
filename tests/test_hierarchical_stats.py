@@ -135,22 +135,16 @@ def test_get_hierarchical_stats_handles_null_values_and_empty_groups(tmp_path):
     assert pd.isna(result.iloc[2]["statistic"])
 
 
-def test_get_hierarchical_stats_returns_fixed_empty_schema_for_invalid_inputs(tmp_path, capsys):
+def test_get_hierarchical_stats_returns_fixed_empty_schema_for_invalid_inputs(tmp_path, caplog):
     frame = BaseData({"group": ["a"], "value": [1]}, cache_dir=tmp_path)
 
     no_target = frame.get_hierarchical_stats("missing", hierarchy_cols="group")
     assert list(no_target.columns) == OUTPUT_COLUMNS
     assert no_target.empty
-    assert capsys.readouterr().out == (
-        "Warning: No valid target columns found for statistics extraction.\n"
-    )
+    assert caplog.messages == ["No valid target columns found for statistics extraction."]
 
-    invalid_strategy = frame.get_hierarchical_stats(
-        "value", strategy="sum", hierarchy_cols="group"
-    )
-    assert list(invalid_strategy.columns) == OUTPUT_COLUMNS
-    assert invalid_strategy.empty
-    assert "Invalid strategy 'sum'" in capsys.readouterr().out
+    with pytest.raises(ValueError, match="Invalid strategy 'sum'"):
+        frame.get_hierarchical_stats("value", strategy="sum", hierarchy_cols="group")
 
     no_hierarchy = frame.get_hierarchical_stats("value", hierarchy_cols="missing")
     assert list(no_hierarchy.columns) == OUTPUT_COLUMNS

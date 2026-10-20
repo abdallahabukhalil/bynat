@@ -271,3 +271,55 @@ def test_save_to_json_append_deduplicates_plain_columns_without_json_keys(tmp_pa
         {"a": 2, "b": "y"},
         {"a": 3, "b": "z"},
     ]
+
+
+def test_fill_missing_rejects_unknown_strategy(tmp_path):
+    frame = BaseData({"g": ["a", "a"], "v": [1.0, None]}, cache_dir=tmp_path)
+
+    with pytest.raises(ValueError, match="Invalid strategy 'sum'"):
+        frame.fill_missing("v", strategy="sum", hierarchy_cols="g")
+
+
+def test_save_to_json_append_refuses_to_overwrite_unreadable_file(tmp_path):
+    file_path = tmp_path / "out.json"
+    file_path.write_text('{"not": "records"', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Cannot append"):
+        BaseData({"a": [1]}, cache_dir=tmp_path).save_to_json(file_path, append=True)
+
+    assert file_path.read_text(encoding="utf-8") == '{"not": "records"'
+
+
+def test_save_to_json_requires_file_path(tmp_path):
+    with pytest.raises(ValueError, match="file_path"):
+        BaseData({"a": [1]}, cache_dir=tmp_path).save_to_json("  ")
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"table_name": " "}, "table_name"),
+        ({"if_exists": "merge"}, "if_exists"),
+        ({"database_type": ""}, "database_type"),
+        ({"database_name": ""}, "SQLite"),
+        ({"database_type": "postgresql", "database_host": ""}, "are required"),
+        ({"database_type": "mssql+pyodbc", "database_user": "u", "database_password": "p",
+          "database_host": "h", "database_port": "1"}, "database_driver"),
+    ],
+)
+def test_save_to_sql_rejects_invalid_arguments_before_connecting(monkeypatch, tmp_path, kwargs, message):
+    monkeypatch.setitem(sys.modules, "sqlalchemy", None)
+    arguments = {
+        "table_name": "items",
+        "database_type": "sqlite",
+        "database_user": "",
+        "database_password": "",
+        "database_host": "",
+        "database_port": "",
+        "database_name": str(tmp_path / "out.db"),
+        "if_exists": "append",
+    }
+    arguments.update(kwargs)
+
+    with pytest.raises(ValueError, match=message):
+        BaseData({"a": [1]}, cache_dir=tmp_path).save_to_sql(**arguments)

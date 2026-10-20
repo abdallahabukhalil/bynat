@@ -259,3 +259,38 @@ def test_save_to_sql_with_real_sqlalchemy_and_sqlite(tmp_path):
     engine.dispose()
 
     assert [tuple(row) for row in rows] == [(1, "x"), (2, "y")]
+
+
+def test_save_to_sql_propagates_database_errors(tmp_path):
+    pytest.importorskip("sqlalchemy")
+    frame = BaseData({"a": [1]}, cache_dir=tmp_path)
+    arguments = dict(
+        database_type="sqlite",
+        database_user="",
+        database_password="",
+        database_host="",
+        database_port="",
+        database_name=str(tmp_path / "out.db"),
+    )
+    frame.save_to_sql("items", **arguments)
+
+    with pytest.raises(ValueError, match="already exists"):
+        frame.save_to_sql("items", if_exists="fail", **arguments)
+
+
+def test_extract_entities_nlp_raises_for_bad_configuration(monkeypatch, tmp_path):
+    def load(model):
+        raise OSError(f"Can't find model '{model}'")
+
+    _install(monkeypatch, "spacy", load=load)
+    _install(monkeypatch, "spacy.matcher", Matcher=object)
+    frame = BaseData({"text": ["python"]}, cache_dir=tmp_path)
+
+    with pytest.raises(ValueError, match="target column"):
+        frame.extract_entities_nlp("text", lexicon_source={"skills": ["python"]})
+    with pytest.raises(ValueError, match="No valid terms"):
+        frame.extract_entities_nlp("text", lexicon_source={"other": ["x"]}, skills="skills")
+    with pytest.raises(OSError, match="missing_model"):
+        frame.extract_entities_nlp(
+            "text", lexicon_source={"skills": ["python"]}, spacy_model="missing_model", skills="skills"
+        )
