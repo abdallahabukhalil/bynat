@@ -1,3 +1,4 @@
+import hashlib
 import importlib
 import inspect
 import json
@@ -37,6 +38,61 @@ _HIERARCHICAL_STATS_COLUMNS = (
     'strategy',
     'statistic',
 )
+
+_NLP_REQUIRED_PIPES = frozenset(
+    {'tok2vec', 'tagger', 'attribute_ruler', 'lemmatizer', 'morphologizer'}
+)
+
+
+def _normalize_nlp_disable(disable: Iterable[str] | str | None) -> tuple[str, ...]:
+    """Normalize and validate spaCy components requested for disabling."""
+    if disable is None:
+        return ()
+
+    if isinstance(disable, str):
+        components = (disable,)
+    else:
+        try:
+            components = tuple(disable)
+        except TypeError as exc:
+            raise TypeError(
+                "disable must be None, a string, or an iterable of strings."
+            ) from exc
+
+    normalized = []
+
+    for component in components:
+        if not isinstance(component, str):
+            raise TypeError("disable must contain only strings.")
+
+        component = component.strip()
+
+        if not component:
+            raise ValueError("disable cannot contain empty component names.")
+
+        if component not in normalized:
+            normalized.append(component)
+
+    prohibited = sorted(set(normalized) & _NLP_REQUIRED_PIPES)
+
+    if prohibited:
+        raise ValueError(
+            "disable cannot disable spaCy components required for NLP extraction: "
+            f"{prohibited}."
+        )
+
+    return tuple(normalized)
+
+
+def _nlp_cache_bucket(target_col: str, model_identifier: str, disable: tuple[str, ...]) -> str:
+    """Build a filesystem-safe cache bucket for one NLP configuration."""
+    identity = json.dumps(
+        [target_col, model_identifier, sorted(disable)],
+        ensure_ascii = False,
+        separators = (',', ':'),
+    )
+    digest = hashlib.sha1(identity.encode('utf-8')).hexdigest()[:16]
+    return f"nlp_{digest}"
 
 
 def _validate_output_type(output_type) -> None:
@@ -2615,10 +2671,10 @@ class BaseData(pd.DataFrame):
         lexicon_source: str | os.PathLike | dict,
         spacy_model: str = "en_core_web_sm",
         exclude_pos: set | list | tuple | str | None = None,
+        disable: Iterable[str] | str | None = ('parser', 'ner'),
         save_every: int = 1000,
         inplace: bool = False,
         noisy_terms: set | None = None,
-        noisey_terms: set | None = None,
         **target_cols_and_json_keys
     ) -> (Self | None):
         """
@@ -2629,7 +2685,33 @@ class BaseData(pd.DataFrame):
             Terms are loaded from a JSON file or dictionary, grouped by target
             output column, and matched across the combined source text. Results
             are cached per unique text snippet so repeat runs avoid reprocessing
-            the same content.
+            the same content. Cache buckets include the target column, model
+            identifier, and normalized disabled components, so configurations do
+            not reuse one another's results.
+
+            The `disable` parameter controls which spaCy pipeline components are
+            disabled during both lexicon and text processing. Its default is
+            `("parser", "ner")`. The components available for disabling depend
+            on the selected spaCy model.
+
+            The following components cannot be disabled because they may be
+            required to provide token annotations or representations used by
+            lemmatization and entity matching:
+                - `tok2vec`
+                - `tagger`
+                - `attribute_ruler`
+                - `lemmatizer`
+                - `morphologizer`
+
+            spaCy pipeline components may depend on one another. For example,
+            some lemmatizers require POS annotations provided by `tagger` and
+            `attribute_ruler`, or by `morphologizer`, depending on the model.
+            Disabling a component may also affect other pipeline outputs.
+
+            Components not present in the selected model are not disabled.
+            Requesting an unknown component logs a warning listing the unknown
+            names and the components available in the loaded pipeline; processing
+            continues.
 
         Args:
             *source_cols: Text columns whose combined content will be searched.
@@ -2640,15 +2722,20 @@ class BaseData(pd.DataFrame):
             exclude_pos (set | list | tuple | str | None): Optional POS tag or
                 tags to ignore for single-token matches, for example
                 `{"VERB", "ADV"}`. Defaults to None.
+            disable (Iterable[str] | str | None): spaCy pipeline components to
+                disable during both lexicon and text processing. Accepts None,
+                one component name, or an iterable of component names.
+                Defaults to `("parser", "ner")`. The components `tok2vec`,
+                `tagger`, `attribute_ruler`, `lemmatizer`, and `morphologizer`
+                cannot be disabled. Unknown component names generate a warning
+                and are otherwise ignored.
             save_every (int): Cache checkpoint frequency during NLP processing.
                 Defaults to 1000.
             inplace (bool): If True, modifies the object directly and returns
                 None. Defaults to False.
             noisy_terms (set | None): Terms that should be ignored even if they
-                are matched. Terms are compared case-insensitively. Defaults to
-                None.
-            noisey_terms (set | None): Deprecated spelling of `noisy_terms`.
-                Kept for backward compatibility.
+                are matched. Terms are compared case-insensitively. Defaults
+                to None.
             **target_cols_and_json_keys: Mapping where each key is an output
                 column name and each value is a lexicon key or list of keys to
                 collect terms from.
@@ -2658,7 +2745,9 @@ class BaseData(pd.DataFrame):
             `inplace=False`, otherwise None.
 
         Raises:
-            ValueError: If `save_every` is not a positive integer.
+            ValueError: If `disable` contains a required spaCy component, a
+                component name is empty, or `save_every` is not a positive
+                integer.
 
         Example:
         ```
@@ -2671,13 +2760,12 @@ class BaseData(pd.DataFrame):
         ```
         """
 
+        normalized_disable = _normalize_nlp_disable(disable)
         ignored_terms = set()
+
 
         if noisy_terms is not None:
             ignored_terms.update(str(term).strip().lower() for term in noisy_terms if str(term).strip())
-
-        if noisey_terms is not None:
-            ignored_terms.update(str(term).strip().lower() for term in noisey_terms if str(term).strip())
 
         if exclude_pos is None:
             exclude_pos = set()
@@ -2771,11 +2859,23 @@ class BaseData(pd.DataFrame):
             return None if inplace else result
 
 
+        if not isinstance(spacy_model, (str, os.PathLike)):
+            raise ValueError("spacy_model must be a non-empty model name or path.")
+
+        model_path = os.fspath(spacy_model)
+
+        if not model_path.strip():
+            raise ValueError("spacy_model must be a non-empty model name or path.")
+
+        model_identifier = os.fsdecode(model_path)
         func_name = "extract_entities_nlp"
         caches = {}
 
         for target_col in term_dict.keys():
-            cache_obj = self.cache_manager.get_column_cache(func_name, target_col)
+            cache_bucket = _nlp_cache_bucket(
+                target_col, model_identifier, normalized_disable
+            )
+            cache_obj = self.cache_manager.get_column_cache(func_name, cache_bucket)
 
             caches[target_col] = cache_obj if isinstance(cache_obj, dict) else {}
 
@@ -2792,17 +2892,25 @@ class BaseData(pd.DataFrame):
             )
             logger.info("Loading NLP Model and building Multi-Label Matcher...")
 
-            if not isinstance(spacy_model, (str, os.PathLike)) or not os.fspath(spacy_model).strip():
-                raise ValueError("spacy_model must be a non-empty model name or path.")
+            nlp = spacy.load(model_path)
 
-            nlp = spacy.load(os.fspath(spacy_model))
+            available_pipe_names = tuple(getattr(nlp, "pipe_names", ()))
+            unknown_disable = sorted(set(normalized_disable) - set(available_pipe_names))
+
+            if unknown_disable:
+                logger.warning(
+                    "Requested spaCy pipeline components %s are not present in the "
+                    "loaded pipeline %s; continuing.",
+                    unknown_disable,
+                    list(available_pipe_names),
+                )
 
             matcher = matcher_module.Matcher(nlp.vocab)
 
             for col_name, terms in term_dict.items():
                 all_patterns = []
 
-                for term_doc in nlp.pipe(terms, disable = ["parser", "ner"]):
+                for term_doc in nlp.pipe(terms, disable = normalized_disable):
                     pattern_lemma = []
                     pattern_lower = []
 
@@ -2825,7 +2933,7 @@ class BaseData(pd.DataFrame):
 
             cache_updated = False
 
-            for i, doc in enumerate(nlp.pipe(texts_to_process, batch_size = 100, disable = ["parser", "ner"])):
+            for i, doc in enumerate(nlp.pipe(texts_to_process, batch_size = 100, disable = normalized_disable)):
                 original_text = texts_to_process[i]
                 found_entities = {col: set() for col in term_dict.keys()}
 

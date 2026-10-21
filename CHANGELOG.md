@@ -2,7 +2,7 @@
 
 ## 0.3.0
 
-This release adds optional hierarchical statistics to hierarchy-aware cleaning methods while preserving their default behavior.
+This release adds optional hierarchical statistics to hierarchy-aware cleaning methods and configurable spaCy pipeline components while preserving existing default behavior.
 
 ### Breaking changes
 
@@ -11,6 +11,7 @@ None.
 ### Added
 
 - `handle_outliers`, `drop_outliers`, and `fill_missing` accept `get_hierarchical_stats=False`. When enabled, they reuse `get_hierarchical_stats()` and return original-data hierarchical statistics alongside non-inplace results, or directly for inplace calls.
+- `extract_entities_nlp` accepts configurable spaCy pipeline components through `disable`, rejects components required for lemmatization, warns for unknown names, and isolates caches by target column, model, and normalized configuration.
 
 ### Fixed
 
@@ -18,7 +19,7 @@ None.
 
 ### Changed
 
-None.
+- Removed the deprecated `noisey_terms` parameter; use `noisy_terms` instead.
 
 ## 0.2.0
 
