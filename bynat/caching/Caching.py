@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import sqlite3
 import tempfile
 import time
 from os import PathLike
@@ -11,6 +12,8 @@ logger = logging.getLogger(__name__)
 
 CACHE_DIR_ENV_VAR = "BYNAT_CACHE_DIR"
 DEFAULT_CACHE_DIR = "Settings/Cache Data/Automated"
+_SQLITE_DATABASE_NAME = "cache.sqlite3"
+_SQLITE_TIMEOUT_SECONDS = 30.0
 
 
 def resolve_cache_dir(cache_dir: str | PathLike | None) -> str | PathLike:
@@ -74,6 +77,71 @@ class CacheManager:
         self.cache_dir = os.path.normpath(expanded_cache_dir)
 
         self.caches = {}
+
+    def _get_database_path(self) -> str:
+        """Return the SQLite database path for this cache directory."""
+        return os.path.join(self.cache_dir_path, _SQLITE_DATABASE_NAME)
+
+    def _connect_sqlite(self):
+        """Open and configure a SQLite connection for cache infrastructure."""
+        connection = sqlite3.connect(
+            self._get_database_path(),
+            timeout = _SQLITE_TIMEOUT_SECONDS,
+        )
+
+        try:
+            connection.execute(f"PRAGMA busy_timeout = {int(_SQLITE_TIMEOUT_SECONDS * 1000)}")
+            connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute("PRAGMA synchronous = FULL")
+            return connection
+        except Exception:
+            connection.close()
+            raise
+
+    def _initialize_sqlite(self) -> None:
+        """Create the SQLite cache schema in one explicit transaction."""
+        os.makedirs(self.cache_dir_path, exist_ok = True)
+        connection = None
+
+        try:
+            connection = self._connect_sqlite()
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS cache_entries (
+                    func_name TEXT NOT NULL,
+                    bucket TEXT NOT NULL,
+                    key TEXT NOT NULL,
+                    value_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (func_name, bucket, key)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_cache_entries_func_bucket
+                ON cache_entries (func_name, bucket)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS migration_metadata (
+                    source_name TEXT PRIMARY KEY,
+                    migrated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.commit()
+        except Exception:
+            if connection is not None:
+                try:
+                    connection.rollback()
+                finally:
+                    connection.close()
+            raise
+        else:
+            connection.close()
 
 
     def _validate_cache_key(self, key: str, key_name: str) -> str:

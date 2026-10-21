@@ -71,10 +71,10 @@ Priority: **P1** correctness or data safety, **P2** performance or maintainabili
   - [x] Confirm migration policy: guard migration with SQLite metadata, re-check the marker inside the write transaction, use idempotent inserts that never overwrite existing SQLite rows, and write the marker only after the complete migration commits.
   - [x] Confirm compatibility: keep `load_function_cache`, `get_column_cache`, `save_function_cache`, and `delete_column_cache`; return ordinary mutable dictionaries; preserve direct indexing, assignment, membership, `.get`, iteration/equality, and explicit `None` values.
   - [x] Record these decisions in the `CACHE-01` checklist and Decisions section below.
-- [ ] **Implement SQLite infrastructure.**
-  - [ ] Define the cache database path and lazy initialization without creating the cache directory during `CacheManager` construction.
-  - [ ] Create the cache-entry and migration-metadata tables with the required primary key and `(func_name, bucket)` access index.
-  - [ ] Implement connection configuration, explicit transaction handling, busy timeout, WAL mode, and durable synchronous behavior.
+- [x] **Implement SQLite infrastructure.**
+  - [x] Define the cache database path and lazy initialization without creating the cache directory during `CacheManager` construction.
+  - [x] Create the cache-entry and migration-metadata tables with the required primary key and `(func_name, bucket)` access index.
+  - [x] Implement connection configuration, explicit transaction handling, busy timeout, WAL mode, and durable synchronous behavior.
 - [ ] **Implement legacy JSON migration.**
   - [ ] Detect each legacy `<func_name>_cache.json` source and record completed migrations in SQLite metadata.
   - [ ] Import valid nested bucket entries transactionally without overwriting existing SQLite rows.
