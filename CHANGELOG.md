@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.0
+
+This release adds optional hierarchical statistics to hierarchy-aware cleaning methods while preserving their default behavior.
+
+### Breaking changes
+
+None.
+
+### Added
+
+- `handle_outliers`, `drop_outliers`, and `fill_missing` accept `get_hierarchical_stats=False`. When enabled, they reuse `get_hierarchical_stats()` and return original-data hierarchical statistics alongside non-inplace results, or directly for inplace calls.
+
+### Fixed
+
+None.
+
+### Changed
+
+None.
+
 ## 0.2.0
 
 This release changes how problems are reported. Review the **Breaking changes** before upgrading.

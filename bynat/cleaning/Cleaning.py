@@ -1866,8 +1866,9 @@ class BaseData(pd.DataFrame):
         *target_cols,
         hierarchy_cols: list,
         min_samples: int = 5,
-        inplace: bool = False
-    ) -> (Self | None):
+        inplace: bool = False,
+        get_hierarchical_stats: bool = False
+    ) -> (Self | tuple[Self, Self] | None):
         """
         Replace outlier values with missing values using hierarchical IQR rules.
 
@@ -1885,14 +1886,31 @@ class BaseData(pd.DataFrame):
                 considered valid. Defaults to 5.
             inplace (bool): If True, modifies the object directly and returns
                 None. Defaults to False.
+            get_hierarchical_stats (bool): If True, also return the existing
+                hierarchical median statistics computed from the original data
+                before outliers are replaced. Defaults to False.
 
         Returns:
-            Self | None: The cleaned dataframe when `inplace=False`, otherwise
-            None.
+            Self | tuple[Self, Self] | None: The cleaned dataframe when
+            `inplace=False`; when `get_hierarchical_stats=True`, return
+            `(cleaned_dataframe, statistics)` for non-inplace calls and the
+            statistics directly for inplace calls. Otherwise return None for
+            inplace calls.
         """
+
+        hierarchical_stats = (
+            self.get_hierarchical_stats(
+                *target_cols,
+                hierarchy_cols=hierarchy_cols,
+            )
+            if get_hierarchical_stats
+            else None
+        )
 
         if not hierarchy_cols:
             logger.warning("No hierarchy columns provided.")
+            if get_hierarchical_stats:
+                return hierarchical_stats if inplace else (self, hierarchical_stats)
             return self if not inplace else None
 
         result = self.copy() if not inplace else self
@@ -1956,6 +1974,8 @@ class BaseData(pd.DataFrame):
                 current_hierarchy.pop()
                 level += 1
 
+        if get_hierarchical_stats:
+            return hierarchical_stats if inplace else (result, hierarchical_stats)
         return None if inplace else result
 
 
@@ -1964,8 +1984,9 @@ class BaseData(pd.DataFrame):
         *target_cols,
         hierarchy_cols: list,
         min_samples: int = 5,
-        inplace: bool = False
-    ):
+        inplace: bool = False,
+        get_hierarchical_stats: bool = False
+    ) -> (Self | tuple[Self, Self] | None):
         """
         Remove rows that contain outlier values based on hierarchical IQR rules.
 
@@ -1982,14 +2003,31 @@ class BaseData(pd.DataFrame):
                 considered valid. Defaults to 5.
             inplace (bool): If True, modifies the object directly and returns
                 None. Defaults to False.
+            get_hierarchical_stats (bool): If True, also return the existing
+                hierarchical median statistics computed from the original data
+                before outlier rows are dropped. Defaults to False.
 
         Returns:
-            Self | None: The filtered dataframe when `inplace=False`, otherwise
-            None.
+            Self | tuple[Self, Self] | None: The filtered dataframe when
+            `inplace=False`; when `get_hierarchical_stats=True`, return
+            `(filtered_dataframe, statistics)` for non-inplace calls and the
+            statistics directly for inplace calls. Otherwise return None for
+            inplace calls.
         """
+
+        hierarchical_stats = (
+            self.get_hierarchical_stats(
+                *target_cols,
+                hierarchy_cols=hierarchy_cols,
+            )
+            if get_hierarchical_stats
+            else None
+        )
 
         if not hierarchy_cols:
             logger.warning("No hierarchy columns provided.")
+            if get_hierarchical_stats:
+                return hierarchical_stats if inplace else (self, hierarchical_stats)
             return self if not inplace else None
 
         result = self.copy() if not inplace else self
@@ -2060,6 +2098,8 @@ class BaseData(pd.DataFrame):
             result.drop(index = np.flatnonzero(drop_mask), inplace = True)
             result.index = original_index[~drop_mask]
 
+        if get_hierarchical_stats:
+            return hierarchical_stats if inplace else (result, hierarchical_stats)
         return None if inplace else result
 
 
@@ -2068,8 +2108,9 @@ class BaseData(pd.DataFrame):
         *target_cols,
         strategy: str = 'median',
         hierarchy_cols: list | str = None,
-        inplace: bool = False
-    ):
+        inplace: bool = False,
+        get_hierarchical_stats: bool = False
+    ) -> (Self | tuple[Self, Self] | None):
         """
         Impute missing values by progressively relaxing a grouping hierarchy.
 
@@ -2088,10 +2129,17 @@ class BaseData(pd.DataFrame):
                 one-item list.
             inplace (bool): If True, modifies the object directly and returns
                 None. Defaults to False.
+            get_hierarchical_stats (bool): If True, also return the existing
+                hierarchical statistics computed from the original data before
+                imputation. The requested `strategy` is used. Defaults to
+                False.
 
         Returns:
-            Self | None: The imputed dataframe when `inplace=False`, otherwise
-            None.
+            Self | tuple[Self, Self] | None: The imputed dataframe when
+            `inplace=False`; when `get_hierarchical_stats=True`, return
+            `(imputed_dataframe, statistics)` for non-inplace calls and the
+            statistics directly for inplace calls. Otherwise return None for
+            inplace calls.
 
         Example:
         ```
@@ -2108,6 +2156,13 @@ class BaseData(pd.DataFrame):
         valid_cols = [col for col in target_cols if col in result.columns]
         if not valid_cols:
             logger.warning("No valid target columns found for imputation.")
+            if get_hierarchical_stats:
+                hierarchical_stats = self.get_hierarchical_stats(
+                    *target_cols,
+                    strategy=strategy,
+                    hierarchy_cols=hierarchy_cols,
+                )
+                return hierarchical_stats if inplace else (result, hierarchical_stats)
             return None if inplace else result
 
         strategy = str(strategy).lower()
@@ -2120,6 +2175,16 @@ class BaseData(pd.DataFrame):
             hierarchy_cols = [hierarchy_cols]
 
         valid_group = [col for col in hierarchy_cols if col in result.columns] if hierarchy_cols else []
+
+        hierarchical_stats = (
+            self.get_hierarchical_stats(
+                *target_cols,
+                strategy=strategy,
+                hierarchy_cols=valid_group,
+            )
+            if get_hierarchical_stats
+            else None
+        )
 
         for col in valid_cols:
             if result[col].isna().sum() == 0:
@@ -2154,6 +2219,8 @@ class BaseData(pd.DataFrame):
 
                 current_group.pop()
 
+        if get_hierarchical_stats:
+            return hierarchical_stats if inplace else (result, hierarchical_stats)
         return None if inplace else result
 
 
