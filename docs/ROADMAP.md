@@ -58,6 +58,51 @@ Priority: **P1** correctness or data safety, **P2** performance or maintainabili
 - **Done when:** a multi-process test writing disjoint keys loses nothing, an interrupted run keeps every committed checkpoint, and existing JSON caches are migrated by a test fixture.
 - **Not doing:** a versioned JSON envelope with `__bynat_type__` tags. Values the methods store are strings, numbers, `None`, and `[lat, lng]` pairs, which JSON already handles.
 
+**Execution policy:** Complete one checklist item at a time. Run the relevant tests or checks after each item, mark an item `[x]` only after its work and verification succeed, and leave it `[ ]` when work is partial or verification fails. Record blockers instead of marking incomplete work complete. Resume from the first unchecked item across sessions. The `CACHE-01` entry itself is not complete until every required subtask and every acceptance criterion above has been verified; checked subtasks must not be treated as milestone completion.
+
+**Implementation checklist:**
+
+- [x] **Resolve design decisions.**
+  - [x] Define deletion semantics: `delete_column_cache` removes only rows represented by the manager's last committed baseline for that function and bucket. Concurrent rows added after that baseline are preserved rather than being deleted by a stale bucket operation.
+  - [x] Define conflict semantics: concurrent writes to different `(func_name, bucket, key)` identities are merged; concurrent writes to the same identity use last committed writer wins. No silent conflict-resolution or retry policy is added to the public API.
+  - [x] Define malformed and unsupported JSON handling: invalid JSON or a non-object top level is quarantined using the existing `.corrupt.<timestamp>` behavior; unsupported nested bucket shapes are not imported or marked migrated, the source remains available for recovery, and the failure is logged explicitly rather than silently discarded.
+  - [x] Define save failures: preserve the current non-raising, logged-error behavior; roll back the SQLite transaction; and leave the in-memory baseline snapshot unchanged so the same pending delta can be retried.
+  - [x] Confirm transaction and initialization policy: lazily create the cache directory/database, use one explicit transaction per migration/save/delete operation, serialize writers with `BEGIN IMMEDIATE`, configure a finite busy timeout, enable WAL journaling, and use durable synchronous commits.
+  - [x] Confirm migration policy: guard migration with SQLite metadata, re-check the marker inside the write transaction, use idempotent inserts that never overwrite existing SQLite rows, and write the marker only after the complete migration commits.
+  - [x] Confirm compatibility: keep `load_function_cache`, `get_column_cache`, `save_function_cache`, and `delete_column_cache`; return ordinary mutable dictionaries; preserve direct indexing, assignment, membership, `.get`, iteration/equality, and explicit `None` values.
+  - [x] Record these decisions in the `CACHE-01` checklist and Decisions section below.
+- [ ] **Implement SQLite infrastructure.**
+  - [ ] Define the cache database path and lazy initialization without creating the cache directory during `CacheManager` construction.
+  - [ ] Create the cache-entry and migration-metadata tables with the required primary key and `(func_name, bucket)` access index.
+  - [ ] Implement connection configuration, explicit transaction handling, busy timeout, WAL mode, and durable synchronous behavior.
+- [ ] **Implement legacy JSON migration.**
+  - [ ] Detect each legacy `<func_name>_cache.json` source and record completed migrations in SQLite metadata.
+  - [ ] Import valid nested bucket entries transactionally without overwriting existing SQLite rows.
+  - [ ] Make migration retryable after parse, validation, insertion, or commit failures.
+  - [ ] Handle concurrent initialization safely through SQLite transactions rather than a lock-directory protocol.
+  - [ ] Preserve corrupt and unsupported JSON sources and log actionable failures.
+- [ ] **Implement cache API integration.**
+  - [ ] Reconstruct SQLite rows into the existing function-level and bucket-level dictionary shape.
+  - [ ] Preserve the behavior and public signatures of all four `CacheManager` methods.
+  - [ ] Track deep baseline snapshots for loaded and successfully committed function caches.
+  - [ ] Save only added, changed, and removed entries so stale in-memory snapshots cannot erase disjoint concurrent updates.
+  - [ ] Ensure bucket deletion cannot erase unrelated concurrent rows.
+- [ ] **Add and update focused tests.**
+  - [ ] Preserve existing API, validation, round-trip, corruption, serialization-error, and deletion regression coverage.
+  - [ ] Add multi-process tests for disjoint-key writes and same-key last-commit-wins behavior.
+  - [ ] Add migration tests for valid data, idempotency, existing SQLite conflicts, concurrent initialization, retry after failure, and malformed/unsupported JSON.
+  - [ ] Add interruption and failed-transaction tests proving previously committed checkpoints remain available.
+  - [ ] Add deletion-semantic tests covering concurrent additions and unrelated buckets.
+- [ ] **Update documentation.**
+  - [ ] Update the README caching section and operational notes after the implemented behavior is verified.
+  - [ ] Update `CHANGELOG.md` only after the implementation and acceptance tests are complete.
+  - [ ] Keep this checklist accurate after every completed step.
+- [ ] **Run final verification and review.**
+  - [ ] Run the complete pytest suite.
+  - [ ] Run `compileall`, Ruff, and repository diff/scope checks.
+  - [ ] Review the implementation for scope creep, stale-snapshot data loss, migration data loss, and API regressions.
+  - [ ] Verify every original `CACHE-01` acceptance criterion and only then move the completed item to the roadmap's completed-milestones table.
+
 #### `ENRICH-01`: one cached-lookup engine with injectable providers (P2, M)
 - **Problem:** `translate_categorical_column`, `translate_conditional_column`, `fill_missing_coordinates`, `convert_to_usd`, and `extract_entities_nlp` each re-implement the same loop: unique values, cache lookup, fetch misses, checkpoint every `save_every`, map back. Providers are hard-coded (`GoogleTranslator`, `Nominatim`, `yfinance`).
 - **Plan:** `_cached_map(series, fetch, bucket, save_every)` plus small `Protocol`s (`Translator`, `Geocoder`, `RateSource`) with the current services as defaults, accepted through an optional `provider=` argument. This replaces the fake-module patching in tests with plain provider objects.
@@ -112,6 +157,13 @@ Priority: **P1** correctness or data safety, **P2** performance or maintainabili
 - **D-03: return convention without `inplace`.** Open. Recommended: always return a new object (see `API-02`), and stop returning aliases from early exits. This changes behavior for callers who rely on `inplace=True`, so it needs the maintainer's approval.
 - **D-04: concurrency for the cache.** Resolved in favor of `sqlite3` (`CACHE-01`) over a lock-directory protocol or a `portalocker` dependency. It gives locking and atomic commits from the standard library.
 - **D-05: logging defaults.** Resolved in `0.2.0`: no `NullHandler`, so `WARNING`s reach stderr through Python's last-resort handler and keep the visibility users had with `print`, while `INFO` progress stays quiet.
+- **D-06: `CACHE-01` deletion semantics.** A bucket deletion is calculated against the manager's last committed baseline and deletes only those known rows. Rows added concurrently after that baseline are preserved, preventing a stale manager from erasing unrelated concurrent work. Resolved: keep the safer preservation behavior.
+- **D-07: `CACHE-01` write conflicts.** Disjoint row identities merge because saves apply deltas. Concurrent writes to the same `(func_name, bucket, key)` use last committed writer wins. Resolved: do not add version columns, conflict exceptions, or a custom merge policy.
+- **D-08: `CACHE-01` legacy JSON validation.** Invalid JSON and non-object top-level values retain the current quarantine behavior. Unsupported nested bucket shapes are not silently converted or discarded; migration leaves the source available, logs the problem, and does not record a completed migration marker. Resolved: preserve recoverability over partial silent import.
+- **D-09: `CACHE-01` save failures.** `save_function_cache` continues to log and return without raising for serialization, locking, and SQLite errors. Failed transactions leave the baseline snapshot unchanged, so pending changes remain retryable. Resolved: preserve the current public error behavior while making rollback explicit.
+- **D-10: `CACHE-01` transaction and initialization settings.** Database creation is lazy. Each migration, save, and deletion is one explicit `BEGIN IMMEDIATE` transaction. Connections use a finite busy timeout, WAL journaling, and durable synchronous commits. Resolved: rely on SQLite locking and transactions, not a lock-directory protocol.
+- **D-11: `CACHE-01` migration safety.** Migration metadata is checked and re-checked inside the write transaction. Entries use idempotent insert-if-absent behavior, so stale JSON cannot overwrite an existing SQLite row. The migration marker is committed only after every source entry succeeds. Resolved: retries are safe after partial failure and concurrent initialization.
+- **D-12: `CACHE-01` API compatibility.** The cache API continues returning ordinary mutable dictionaries rather than a custom mapping. Existing direct indexing, assignment, membership, `.get`, iteration/equality, and explicit `None` values remain supported. Resolved: use baseline snapshots and delta persistence instead of changing callers.
 
 ## 6. Definition of done
 
