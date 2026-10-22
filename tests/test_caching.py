@@ -1312,6 +1312,60 @@ def test_save_conflict_update_last_writer_wins_and_disjoint_merge(tmp_path):
     assert reloaded["bucket"]["c"] == "C1"
 
 
+def _concurrent_save_worker(cache_dir, func_name, bucket, key, value, start_event, result_queue):
+    """Spawned worker: load the shared baseline, then commit one disjoint key.
+
+    The baseline is loaded before the start event so both workers capture the
+    same pre-save snapshot; the event then releases them to write and commit
+    their disjoint keys concurrently against the same SQLite cache.
+    """
+    try:
+        manager = CacheManager(cache_dir)
+        live = manager.load_function_cache(func_name)
+        start_event.wait(10)
+        live.setdefault(bucket, {})[key] = value
+        manager.save_function_cache(func_name)
+        result_queue.put("ok")
+    except Exception as error:  # pragma: no cover - reported to the parent
+        result_queue.put(f"{type(error).__name__}: {error}")
+
+
+def test_save_function_cache_is_safe_for_concurrent_disjoint_saves(tmp_path):
+    cache_dir = tmp_path / "cache"
+    # Establish a shared baseline in the SQLite cache before any worker starts,
+    # so each worker's load captures the same snapshot to diff against.
+    seed = CacheManager(cache_dir)
+    _seed_cache_entries(seed, "translate", [("bucket", "base", '"base"')])
+
+    context = multiprocessing.get_context("spawn")
+    start_event = context.Event()
+    result_queue = context.Queue()
+    processes = [
+        context.Process(
+            target=_concurrent_save_worker,
+            args=(str(cache_dir), "translate", "bucket", key, value, start_event, result_queue),
+        )
+        for key, value in (("left", "worker-left"), ("right", "worker-right"))
+    ]
+    try:
+        for process in processes:
+            process.start()
+        start_event.set()
+        for process in processes:
+            process.join(20)
+            assert not process.is_alive()
+        assert [result_queue.get(timeout=2) for _ in processes] == ["ok", "ok"]
+    finally:
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+                process.join(5)
+
+    # Both disjoint writes committed through separate processes survive reload.
+    reloaded = CacheManager(cache_dir).load_function_cache("translate")
+    assert reloaded == {"bucket": {"base": "base", "left": "worker-left", "right": "worker-right"}}
+
+
 # ``delete_column_cache`` is validated through two sequential ``CacheManager``
 # instances rather than real processes. The D-06 identity-scope rule asks which
 # rows a bucket deletion removes, and that set is a deterministic function of the
@@ -1379,6 +1433,103 @@ def test_delete_column_cache_stale_manager_preserves_concurrent_additions(tmp_pa
 
     # The key added after the stale baseline survives; only the known row is gone.
     assert _rows(manager) == [("status", "concurrent", '"Concurrent"')]
+
+
+# The sequential test above reproduces the stale-baseline interaction with two
+# managers in a single process. The same identity-scope rule can also be proven
+# across genuine separate processes without any scheduling assumption: spawned
+# workers coordinate purely through events, so the ordering is *enforced* rather
+# than raced. The deleting worker loads its baseline, then signals readiness; the
+# adding worker waits for that signal before committing a new key, then signals
+# completion; only then does the deleting worker call ``delete_column_cache``.
+# Each step happens-before the next across the process boundary, so this adds no
+# nondeterminism while exercising a real second address space — the deleting
+# process holds an independent deep-copy baseline that never shared memory with
+# the adding process, and the added key is provably durable before deletion runs.
+def _add_key_after_baseline_worker(cache_dir, func_name, bucket, key, value, baseline_event, commit_event, result_queue):
+    """Adding worker: wait for the deleter's baseline, commit one new key, signal.
+
+    ``baseline_event`` is set by the deleting worker once its baseline is loaded,
+    so this add commits strictly after that snapshot. ``commit_event`` is set only
+    after ``save_function_cache`` returns — i.e. after the new row is durable — so
+    the deleting worker's later deletion is provably ordered after this commit.
+    """
+    try:
+        manager = CacheManager(cache_dir)
+        if not baseline_event.wait(10):
+            result_queue.put("timeout: deleter baseline never captured")
+            return
+        live = manager.load_function_cache(func_name)
+        live.setdefault(bucket, {})[key] = value
+        manager.save_function_cache(func_name)
+        commit_event.set()
+        result_queue.put("ok")
+    except Exception as error:  # pragma: no cover - reported to the parent
+        result_queue.put(f"{type(error).__name__}: {error}")
+
+
+def _load_baseline_then_delete_worker(cache_dir, func_name, bucket, baseline_event, commit_event, result_queue):
+    """Deleting worker: load baseline, signal readiness, then delete after the add.
+
+    The baseline is captured before ``baseline_event`` is set, so the adding
+    worker cannot commit into the bucket until after this snapshot exists. The
+    worker then blocks on ``commit_event`` — set by the adding worker only after
+    its commit — so ``delete_column_cache`` runs strictly after the new key is
+    durable while this process's baseline still predates it.
+    """
+    try:
+        manager = CacheManager(cache_dir)
+        manager.load_function_cache(func_name)
+        baseline_event.set()
+        if not commit_event.wait(10):
+            result_queue.put("timeout: concurrent add never committed")
+            return
+        manager.delete_column_cache(func_name, bucket)
+        result_queue.put("ok")
+    except Exception as error:  # pragma: no cover - reported to the parent
+        result_queue.put(f"{type(error).__name__}: {error}")
+
+
+def test_delete_column_cache_across_processes_preserves_concurrent_addition(tmp_path):
+    cache_dir = tmp_path / "cache"
+    # Seed the shared baseline before either worker starts, so the deleting
+    # worker's load captures only this pre-existing key.
+    seed = CacheManager(cache_dir)
+    _seed_cache_entries(seed, "translate", [("status", "known", '"Known"')])
+
+    context = multiprocessing.get_context("spawn")
+    baseline_event = context.Event()
+    commit_event = context.Event()
+    result_queue = context.Queue()
+
+    adder = context.Process(
+        target=_add_key_after_baseline_worker,
+        args=(str(cache_dir), "translate", "status", "concurrent", "Concurrent", baseline_event, commit_event, result_queue),
+    )
+    deleter = context.Process(
+        target=_load_baseline_then_delete_worker,
+        args=(str(cache_dir), "translate", "status", baseline_event, commit_event, result_queue),
+    )
+
+    try:
+        # Order is driven entirely by the workers via the two events; the parent
+        # only starts them, waits on bounded joins, and checks their reports.
+        deleter.start()
+        adder.start()
+        for process in (adder, deleter):
+            process.join(20)
+            assert not process.is_alive()
+        results = [result_queue.get(timeout=2) for _ in range(2)]
+        assert all(result == "ok" for result in results), results
+    finally:
+        for process in (adder, deleter):
+            if process.is_alive():
+                process.terminate()
+                process.join(5)
+
+    # The add committed after the deleting process's baseline, so the identity
+    # deletion removed only the seeded key; the concurrent key survives reload.
+    assert _rows(seed) == [("status", "concurrent", '"Concurrent"')]
 
 
 def test_delete_column_cache_leaves_unrelated_buckets_intact(tmp_path):
