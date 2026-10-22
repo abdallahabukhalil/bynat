@@ -4,6 +4,8 @@ import os
 import sqlite3
 import tempfile
 import time
+import uuid
+from datetime import UTC, datetime
 from os import PathLike
 
 __all__ = ['CacheManager', 'CACHE_DIR_ENV_VAR', 'DEFAULT_CACHE_DIR']
@@ -144,6 +146,160 @@ class CacheManager:
             connection.close()
 
 
+    def _quarantine_corrupt_cache_file(self, file_path: str) -> str | None:
+        """Move a corrupt cache file aside without overwriting a quarantine."""
+        quarantine_path = None
+
+        for _ in range(10):
+            candidate = f"{file_path}.corrupt.{time.time_ns()}.{uuid.uuid4().hex}"
+            try:
+                descriptor = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(descriptor)
+                quarantine_path = candidate
+                break
+            except FileExistsError:
+                continue
+
+        if quarantine_path is None:
+            return None
+
+        try:
+            os.replace(file_path, quarantine_path)
+            return quarantine_path
+        except FileNotFoundError:
+            # Another process may have quarantined the source first.
+            try:
+                os.remove(quarantine_path)
+            except OSError:
+                pass
+            return None
+        except OSError:
+            try:
+                os.remove(quarantine_path)
+            except OSError:
+                pass
+            return None
+
+    def _migrate_legacy_json_cache(self, func_name: str) -> None:
+        """Import one legacy JSON cache into SQLite, without changing the API."""
+        func_name = self._validate_cache_key(func_name, "func_name")
+        file_path = self._get_file_path(func_name)
+        source_name = os.path.basename(file_path)
+
+        if not os.path.exists(file_path):
+            return
+
+        try:
+            with open(file_path, encoding = "utf-8") as cache:
+                loaded_cache = json.load(cache)
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
+            try:
+                quarantine_path = self._quarantine_corrupt_cache_file(file_path)
+                location = (
+                    f"moved it to '{quarantine_path}'"
+                    if quarantine_path is not None
+                    else "another process may have moved it aside"
+                )
+            except OSError as quarantine_error:
+                location = f"could not move it aside: {quarantine_error}"
+            logger.warning(
+                "Legacy cache file '%s' is corrupted; %s. Details: %s",
+                file_path, location, error,
+            )
+            return
+        except OSError as error:
+            logger.warning("Could not read legacy cache file '%s'. Details: %s", file_path, error)
+            return
+
+        if not isinstance(loaded_cache, dict):
+            try:
+                quarantine_path = self._quarantine_corrupt_cache_file(file_path)
+                location = (
+                    f"moved it to '{quarantine_path}'"
+                    if quarantine_path is not None
+                    else "another process may have moved it aside"
+                )
+            except OSError as quarantine_error:
+                location = f"could not move it aside: {quarantine_error}"
+            logger.warning(
+                "Legacy cache file '%s' has an invalid top-level JSON value; %s.",
+                file_path, location,
+            )
+            return
+
+        for bucket, entries in loaded_cache.items():
+            if not isinstance(entries, dict):
+                logger.warning(
+                    "Legacy cache file '%s' is unsupported: bucket '%s' is not a JSON object; "
+                    "source preserved for recovery.",
+                    file_path, bucket,
+                )
+                return
+
+        prepared_entries = []
+        created_at = datetime.now(UTC).isoformat()
+        try:
+            for bucket, entries in loaded_cache.items():
+                for key, value in entries.items():
+                    prepared_entries.append(
+                        (func_name, bucket, key, json.dumps(value, ensure_ascii = False), created_at)
+                    )
+        except (TypeError, ValueError) as error:
+            logger.warning(
+                "Legacy cache file '%s' contains an unsupported value; source preserved for recovery. "
+                "Details: %s",
+                file_path, error,
+            )
+            return
+
+        connection = None
+        try:
+            for attempt in range(6):
+                try:
+                    self._initialize_sqlite()
+                    break
+                except sqlite3.OperationalError as error:
+                    if "locked" not in str(error).lower() or attempt == 5:
+                        raise
+                    time.sleep(0.05 * (attempt + 1))
+            connection = self._connect_sqlite()
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute(
+                "SELECT 1 FROM migration_metadata WHERE source_name = ?",
+                (source_name,),
+            ).fetchone() is not None:
+                connection.rollback()
+                return
+
+            connection.executemany(
+                """
+                INSERT OR IGNORE INTO cache_entries
+                (func_name, bucket, key, value_json, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                prepared_entries,
+            )
+            connection.execute(
+                "INSERT INTO migration_metadata (source_name, migrated_at) VALUES (?, ?)",
+                (source_name, datetime.now(UTC).isoformat()),
+            )
+            connection.commit()
+        except Exception:
+            if connection is not None:
+                try:
+                    connection.rollback()
+                except Exception:
+                    pass
+            raise
+        finally:
+            if connection is not None:
+                connection.close()
+
+    def _migrate_legacy_cache(self, func_name: str) -> None:
+        """Compatibility name for the reusable legacy migration helper."""
+        self._migrate_legacy_json_cache(func_name)
+
+
     def _validate_cache_key(self, key: str, key_name: str) -> str:
         """
         Validate a cache key before using it in file paths or dictionaries.
@@ -228,17 +384,15 @@ class CacheManager:
                 except ValueError as e:
                     # JSONDecodeError and UnicodeDecodeError are ValueErrors. Keep the bad file for manual
                     # recovery instead of letting the next save overwrite it.
-                    quarantine_path = f"{file_path}.corrupt.{int(time.time())}"
-
-                    try:
-                        os.replace(file_path, quarantine_path)
-                        location = f"moved it to '{quarantine_path}'"
-
-                    except OSError:
-                        location = "could not move it aside"
+                    quarantine_path = self._quarantine_corrupt_cache_file(file_path)
+                    location = (
+                        f"moved it to '{quarantine_path}'"
+                        if quarantine_path is not None
+                        else "could not move it aside"
+                    )
 
                     logger.warning(
-                        "Cache file '%s' is corrupted; %s and started an empty cache. Details: %s",
+                        "Cache file '%s' is corrupted; %s. Details: %s",
                         file_path, location, e
                     )
                     self.caches[func_name] = {}

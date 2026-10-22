@@ -1,9 +1,19 @@
 import json
+import multiprocessing
 import sqlite3
 
 import pytest
 
 from bynat.caching import CacheManager
+
+
+def _run_legacy_migration(cache_dir, func_name, start_event, result_queue):
+    try:
+        start_event.wait(10)
+        CacheManager(cache_dir)._migrate_legacy_json_cache(func_name)
+        result_queue.put("ok")
+    except Exception as error:  # pragma: no cover - reported to the parent
+        result_queue.put(f"{type(error).__name__}: {error}")
 
 
 def test_cache_round_trip_and_column_deletion(tmp_path):
@@ -338,3 +348,283 @@ def test_repeated_sqlite_initialization_is_safe(tmp_path):
             "WHERE type IN ('table', 'index') AND name IN "
             "('cache_entries', 'migration_metadata', 'idx_cache_entries_func_bucket')"
         ).fetchone()[0] == 3
+
+
+def test_legacy_migration_imports_supported_values_and_maps_filename(tmp_path):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    (cache_dir / "translate_cache.json").write_text(
+        json.dumps({
+            "status": {"pending": "Pending", "missing": None},
+            "coordinates": {"home": [1.5, 2], "nested": {"ok": True}},
+        }),
+        encoding="utf-8",
+    )
+
+    manager = CacheManager(cache_dir)
+    manager._migrate_legacy_json_cache("translate")
+
+    with sqlite3.connect(manager._get_database_path()) as connection:
+        rows = connection.execute(
+            "SELECT func_name, bucket, key, value_json FROM cache_entries ORDER BY bucket, key"
+        ).fetchall()
+        marker = connection.execute(
+            "SELECT source_name FROM migration_metadata"
+        ).fetchall()
+
+    assert rows == [
+        ("translate", "coordinates", "home", "[1.5, 2]"),
+        ("translate", "coordinates", "nested", '{"ok": true}'),
+        ("translate", "status", "missing", "null"),
+        ("translate", "status", "pending", '"Pending"'),
+    ]
+    assert marker == [("translate_cache.json",)]
+
+
+def test_legacy_migration_is_idempotent_and_existing_rows_win(tmp_path):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    manager = CacheManager(cache_dir)
+    manager._initialize_sqlite()
+    with sqlite3.connect(manager._get_database_path()) as connection:
+        connection.execute(
+            "INSERT INTO cache_entries VALUES (?, ?, ?, ?, ?)",
+            ("translate", "status", "pending", '"fresh"', "old"),
+        )
+        connection.commit()
+    (cache_dir / "translate_cache.json").write_text(
+        '{"status": {"pending": "stale", "new": 3}}', encoding="utf-8"
+    )
+
+    manager._migrate_legacy_json_cache("translate")
+    manager._migrate_legacy_json_cache("translate")
+
+    with sqlite3.connect(manager._get_database_path()) as connection:
+        assert connection.execute(
+            "SELECT value_json FROM cache_entries WHERE bucket = 'status' AND key = 'pending'"
+        ).fetchone() == ('"fresh"',)
+        assert connection.execute(
+            "SELECT count(*) FROM cache_entries"
+        ).fetchone() == (2,)
+        assert connection.execute(
+            "SELECT count(*) FROM migration_metadata"
+        ).fetchone() == (1,)
+
+
+def test_missing_legacy_source_does_not_create_database_or_marker(tmp_path):
+    manager = CacheManager(tmp_path / "cache")
+
+    manager._migrate_legacy_json_cache("missing")
+
+    assert not (tmp_path / "cache").exists()
+
+
+@pytest.mark.parametrize("content", ["{not json", "[1, 2]"])
+def test_legacy_migration_quarantines_corrupt_source_without_marker(tmp_path, content, caplog):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    source = cache_dir / "broken_cache.json"
+    source.write_text(content, encoding="utf-8")
+
+    CacheManager(cache_dir)._migrate_legacy_json_cache("broken")
+
+    assert not source.exists()
+    assert len(list(cache_dir.glob("broken_cache.json.corrupt.*"))) == 1
+    assert "marker" not in caplog.text.lower()
+    assert not (cache_dir / "cache.sqlite3").exists()
+
+
+def test_legacy_migration_preserves_unsupported_source_for_retry(tmp_path, caplog):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    source = cache_dir / "translate_cache.json"
+    source.write_text('{"status": ["bad"]}', encoding="utf-8")
+    manager = CacheManager(cache_dir)
+
+    manager._migrate_legacy_json_cache("translate")
+    assert source.exists()
+    assert "unsupported" in caplog.text
+    assert not (cache_dir / "cache.sqlite3").exists()
+
+    source.write_text('{"status": {"ok": null}}', encoding="utf-8")
+    manager._migrate_legacy_json_cache("translate")
+    with sqlite3.connect(manager._get_database_path()) as connection:
+        assert connection.execute("SELECT count(*) FROM cache_entries").fetchone() == (1,)
+
+
+def test_legacy_migration_rolls_back_and_can_retry_after_partial_insert_failure(
+    tmp_path, monkeypatch
+):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    (cache_dir / "translate_cache.json").write_text(
+        '{"status": {"a": 1, "b": 2}}', encoding="utf-8"
+    )
+    manager = CacheManager(cache_dir)
+    real_connect = manager._connect_sqlite
+    state = {"failed": False, "inserted_rows": 0}
+
+    class PartiallyFailingConnection:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def execute(self, statement, parameters=()):
+            return self.connection.execute(statement, parameters)
+
+        def executemany(self, statement, parameters):
+            if not state["failed"] and "INSERT OR IGNORE" in statement:
+                rows = list(parameters)
+                self.connection.execute(statement, rows[0])
+                state["inserted_rows"] = 1
+                state["failed"] = True
+                raise sqlite3.OperationalError("insert failure")
+            return self.connection.executemany(statement, parameters)
+
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
+
+    monkeypatch.setattr(
+        manager, "_connect_sqlite", lambda: PartiallyFailingConnection(real_connect())
+    )
+    with pytest.raises(sqlite3.OperationalError, match="insert failure"):
+        manager._migrate_legacy_json_cache("translate")
+
+    assert state["inserted_rows"] == 1
+    with sqlite3.connect(manager._get_database_path()) as connection:
+        assert connection.execute("SELECT count(*) FROM cache_entries").fetchone() == (0,)
+        assert connection.execute("SELECT count(*) FROM migration_metadata").fetchone() == (0,)
+
+    manager._migrate_legacy_json_cache("translate")
+    with sqlite3.connect(manager._get_database_path()) as connection:
+        assert connection.execute(
+            "SELECT bucket, key, value_json FROM cache_entries ORDER BY key"
+        ).fetchall() == [("status", "a", "1"), ("status", "b", "2")]
+        assert connection.execute(
+            "SELECT source_name FROM migration_metadata"
+        ).fetchall() == [("translate_cache.json",)]
+
+
+def test_legacy_migration_rolls_back_and_can_retry_after_marker_insert_failure(
+    tmp_path, monkeypatch
+):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    (cache_dir / "translate_cache.json").write_text(
+        '{"status": {"a": 1, "b": 2}}', encoding="utf-8"
+    )
+    manager = CacheManager(cache_dir)
+    real_connect = manager._connect_sqlite
+    state = {"failed": False, "entry_rows": 0, "marker_attempted": False}
+
+    class MarkerFailingConnection:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def execute(self, statement, parameters=()):
+            normalized = " ".join(statement.split()).upper()
+            if not state["failed"] and normalized.startswith(
+                "INSERT INTO MIGRATION_METADATA"
+            ):
+                state["failed"] = True
+                state["marker_attempted"] = True
+                raise sqlite3.OperationalError("marker insert failure")
+            return self.connection.execute(statement, parameters)
+
+        def executemany(self, statement, parameters):
+            if "INSERT OR IGNORE" in statement:
+                rows = list(parameters)
+                state["entry_rows"] = len(rows)
+                return self.connection.executemany(statement, rows)
+            return self.connection.executemany(statement, parameters)
+
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
+
+    monkeypatch.setattr(
+        manager, "_connect_sqlite", lambda: MarkerFailingConnection(real_connect())
+    )
+    with pytest.raises(sqlite3.OperationalError, match="marker insert failure"):
+        manager._migrate_legacy_json_cache("translate")
+
+    assert state["entry_rows"] == 2
+    assert state["marker_attempted"]
+    with sqlite3.connect(manager._get_database_path()) as connection:
+        assert connection.execute("SELECT count(*) FROM cache_entries").fetchone() == (0,)
+        assert connection.execute("SELECT count(*) FROM migration_metadata").fetchone() == (0,)
+
+    manager._migrate_legacy_json_cache("translate")
+    with sqlite3.connect(manager._get_database_path()) as connection:
+        assert connection.execute("SELECT count(*) FROM cache_entries").fetchone() == (2,)
+        assert connection.execute(
+            "SELECT source_name FROM migration_metadata"
+        ).fetchall() == [("translate_cache.json",)]
+
+
+def test_legacy_migration_rolls_back_and_can_retry_after_commit_failure(tmp_path, monkeypatch):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    (cache_dir / "translate_cache.json").write_text(
+        '{"status": {"ok": true}}', encoding="utf-8"
+    )
+    manager = CacheManager(cache_dir)
+    real_connect = manager._connect_sqlite
+    state = {"commits": 0}
+
+    class CommitFailingConnection:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def commit(self):
+            state["commits"] += 1
+            if state["commits"] == 2:
+                raise sqlite3.OperationalError("commit failure")
+            return self.connection.commit()
+
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
+
+    monkeypatch.setattr(
+        manager, "_connect_sqlite", lambda: CommitFailingConnection(real_connect())
+    )
+    with pytest.raises(sqlite3.OperationalError, match="commit failure"):
+        manager._migrate_legacy_json_cache("translate")
+
+    monkeypatch.undo()
+    with sqlite3.connect(manager._get_database_path()) as connection:
+        assert connection.execute("SELECT count(*) FROM cache_entries").fetchone() == (0,)
+        assert connection.execute("SELECT count(*) FROM migration_metadata").fetchone() == (0,)
+    manager._migrate_legacy_json_cache("translate")
+    with sqlite3.connect(manager._get_database_path()) as connection:
+        assert connection.execute("SELECT count(*) FROM migration_metadata").fetchone() == (1,)
+
+
+@pytest.mark.parametrize("func_names", [["same"], ["left", "right"]])
+def test_legacy_migration_is_safe_for_concurrent_sources(tmp_path, func_names):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    for func_name in func_names:
+        (cache_dir / f"{func_name}_cache.json").write_text(
+            json.dumps({"bucket": {f"key-{func_name}": func_name}}), encoding="utf-8"
+        )
+
+    context = multiprocessing.get_context("spawn")
+    start_event = context.Event()
+    result_queue = context.Queue()
+    processes = [
+        context.Process(
+            target=_run_legacy_migration,
+            args=(str(cache_dir), func_name, start_event, result_queue),
+        )
+        for func_name in func_names * 2
+    ]
+    for process in processes:
+        process.start()
+    start_event.set()
+    for process in processes:
+        process.join(20)
+        assert not process.is_alive()
+    assert [result_queue.get(timeout=2) for _ in processes] == ["ok"] * len(processes)
+
+    with sqlite3.connect(cache_dir / "cache.sqlite3") as connection:
+        assert connection.execute("SELECT count(*) FROM cache_entries").fetchone() == (len(func_names),)
+        assert connection.execute("SELECT count(*) FROM migration_metadata").fetchone() == (len(func_names),)

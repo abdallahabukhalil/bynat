@@ -75,12 +75,12 @@ Priority: **P1** correctness or data safety, **P2** performance or maintainabili
   - [x] Define the cache database path and lazy initialization without creating the cache directory during `CacheManager` construction.
   - [x] Create the cache-entry and migration-metadata tables with the required primary key and `(func_name, bucket)` access index.
   - [x] Implement connection configuration, explicit transaction handling, busy timeout, WAL mode, and durable synchronous behavior.
-- [ ] **Implement legacy JSON migration.**
-  - [ ] Detect each legacy `<func_name>_cache.json` source and record completed migrations in SQLite metadata.
-  - [ ] Import valid nested bucket entries transactionally without overwriting existing SQLite rows.
-  - [ ] Make migration retryable after parse, validation, insertion, or commit failures.
-  - [ ] Handle concurrent initialization safely through SQLite transactions rather than a lock-directory protocol.
-  - [ ] Preserve corrupt and unsupported JSON sources and log actionable failures.
+- [x] **Implement legacy JSON migration.**
+  - [x] Detect each legacy `<func_name>_cache.json` source and record completed migrations in SQLite metadata.
+  - [x] Import valid nested bucket entries transactionally without overwriting existing SQLite rows.
+  - [x] Make migration retryable after parse, validation, insertion, or commit failures.
+  - [x] Handle concurrent initialization safely through SQLite transactions rather than a lock-directory protocol.
+  - [x] Preserve corrupt and unsupported JSON sources and log actionable failures.
 - [ ] **Implement cache API integration.**
   - [ ] Reconstruct SQLite rows into the existing function-level and bucket-level dictionary shape.
   - [ ] Preserve the behavior and public signatures of all four `CacheManager` methods.
