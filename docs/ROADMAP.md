@@ -81,12 +81,12 @@ Priority: **P1** correctness or data safety, **P2** performance or maintainabili
   - [x] Make migration retryable after parse, validation, insertion, or commit failures.
   - [x] Handle concurrent initialization safely through SQLite transactions rather than a lock-directory protocol.
   - [x] Preserve corrupt and unsupported JSON sources and log actionable failures.
-- [ ] **Implement cache API integration.**
-  - [ ] Reconstruct SQLite rows into the existing function-level and bucket-level dictionary shape.
-  - [ ] Preserve the behavior and public signatures of all four `CacheManager` methods.
-  - [ ] Track deep baseline snapshots for loaded and successfully committed function caches.
-  - [ ] Save only added, changed, and removed entries so stale in-memory snapshots cannot erase disjoint concurrent updates.
-  - [ ] Ensure bucket deletion cannot erase unrelated concurrent rows.
+- [x] **Implement cache API integration.**
+  - [x] Reconstruct SQLite rows into the existing function-level and bucket-level dictionary shape.
+  - [x] Preserve the behavior and public signatures of all four `CacheManager` methods.
+  - [x] Track deep baseline snapshots for loaded and successfully committed function caches.
+  - [x] Save only added, changed, and removed entries so stale in-memory snapshots cannot erase disjoint concurrent updates.
+  - [x] Ensure bucket deletion cannot erase unrelated concurrent rows.
 - [ ] **Add and update focused tests.**
   - [ ] Preserve existing API, validation, round-trip, corruption, serialization-error, and deletion regression coverage.
   - [ ] Add multi-process tests for disjoint-key writes and same-key last-commit-wins behavior.

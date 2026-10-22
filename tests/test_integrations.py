@@ -1,6 +1,7 @@
 """Offline tests for methods that call external services, using fake modules."""
 
 import json
+import sqlite3
 import sys
 import types
 
@@ -149,8 +150,13 @@ def test_fill_missing_coordinates_shortens_queries_and_caches_misses(monkeypatch
     assert result[["lat", "lng"]].iloc[1].isna().all()
     assert result[["lat", "lng"]].iloc[2].tolist() == [48.8, 2.3]
 
-    cache = json.loads((tmp_path / "fill_missing_coordinates_cache.json").read_text(encoding="utf-8"))
-    assert cache["geocode_queries"]["Nowhere Rd, Atlantis"] is None
+    with sqlite3.connect(frame.cache_manager._get_database_path()) as connection:
+        value_json = connection.execute(
+            "SELECT value_json FROM cache_entries "
+            "WHERE func_name = 'fill_missing_coordinates' "
+            "AND bucket = 'geocode_queries' AND key = 'Nowhere Rd, Atlantis'"
+        ).fetchone()[0]
+    assert json.loads(value_json) is None
 
     calls.clear()
     frame.fill_missing_coordinates("street", "city", "country", lat_col="lat", long_col="lng")
@@ -214,10 +220,24 @@ def test_convert_to_usd_looks_back_and_caches_missing_years(monkeypatch, tmp_pat
     assert result.loc["d", "salary_usd"] == 2.0
     assert fetches == [("EGP=X", 2020), ("EGP=X", 2019)]
 
-    cache = json.loads((tmp_path / "convert_to_usd_cache.json").read_text(encoding="utf-8"))
-    assert cache["currency_codes"]["Atlantis"] is None
-    assert cache["exchange_rates"]["EGP_2020"] is None
-    assert cache["exchange_rates"]["EGP_2019"] == 17.0
+    with sqlite3.connect(frame.cache_manager._get_database_path()) as connection:
+        currency_codes = {
+            key: json.loads(value_json)
+            for key, value_json in connection.execute(
+                "SELECT key, value_json FROM cache_entries "
+                "WHERE func_name = 'convert_to_usd' AND bucket = 'currency_codes'"
+            )
+        }
+        exchange_rates = {
+            key: json.loads(value_json)
+            for key, value_json in connection.execute(
+                "SELECT key, value_json FROM cache_entries "
+                "WHERE func_name = 'convert_to_usd' AND bucket = 'exchange_rates'"
+            )
+        }
+    assert currency_codes["Atlantis"] is None
+    assert exchange_rates["EGP_2020"] is None
+    assert exchange_rates["EGP_2019"] == 17.0
 
     fetches.clear()
     frame.convert_to_usd("salary", country_col="country", year_col="year")

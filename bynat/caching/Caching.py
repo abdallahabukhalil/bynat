@@ -1,8 +1,8 @@
+import copy
 import json
 import logging
 import os
 import sqlite3
-import tempfile
 import time
 import uuid
 from datetime import UTC, datetime
@@ -79,6 +79,7 @@ class CacheManager:
         self.cache_dir = os.path.normpath(expanded_cache_dir)
 
         self.caches = {}
+        self._baselines = {}
 
     def _get_database_path(self) -> str:
         """Return the SQLite database path for this cache directory."""
@@ -300,6 +301,42 @@ class CacheManager:
         self._migrate_legacy_json_cache(func_name)
 
 
+    def _rebuild_function_cache_from_sqlite(self, func_name: str) -> dict:
+        """
+        Rebuild the nested cache for one function from its SQLite rows.
+
+        Reads every ``cache_entries`` row for ``func_name`` and decodes each
+        ``value_json`` blob back into a Python value with ``json.loads``, so
+        explicit ``None`` and nested lists/dicts round-trip faithfully. The
+        result mirrors the legacy JSON shape: ``{bucket: {key: decoded_value}}``.
+
+        Args:
+            func_name (str): Function identifier whose rows should be rebuilt.
+
+        Returns:
+            dict: Nested ``{bucket: {key: value}}`` mapping for the function.
+            An empty dictionary is returned when the function has no rows.
+        """
+        func_name = self._validate_cache_key(func_name, "func_name")
+        reconstructed: dict = {}
+
+        connection = self._connect_sqlite()
+
+        try:
+            rows = connection.execute(
+                "SELECT bucket, key, value_json FROM cache_entries "
+                "WHERE func_name = ? ORDER BY bucket, key",
+                (func_name,),
+            ).fetchall()
+        finally:
+            connection.close()
+
+        for bucket, key, value_json in rows:
+            reconstructed.setdefault(bucket, {})[key] = json.loads(value_json)
+
+        return reconstructed
+
+
     def _validate_cache_key(self, key: str, key_name: str) -> str:
         """
         Validate a cache key before using it in file paths or dictionaries.
@@ -352,15 +389,26 @@ class CacheManager:
 
     def load_function_cache(self, func_name: str):
         """
-        Load a function cache from disk into memory on first access.
+        Load a function cache from SQLite into memory on first access.
+
+        The SQLite backend is created on first public access for any function.
+        Before reading, any legacy JSON cache for the function is migrated into
+        SQLite through the accepted migration helper, then the function's cache
+        is rebuilt from its SQLite rows via
+        ``_rebuild_function_cache_from_sqlite``. On first load the reconstructed
+        state is deep-copied into a private per-function baseline
+        (``_baselines[func_name]``) so the snapshot never shares nested mutable
+        references with the live cache. The returned dict is memoized, so
+        repeated lookups and in-place mutations stay consistent for the lifetime
+        of the manager.
 
         Args:
-            func_name (str): Function identifier whose cache file should be
-                loaded.
+            func_name (str): Function identifier whose cache should be loaded.
 
         Returns:
-            dict: The in-memory cache object for the requested function. If no
-            cache file exists yet, an empty dictionary is created and returned.
+            dict: The in-memory cache object for the requested function, backed
+            by SQLite. A function with no cached entries returns an empty
+            dictionary.
 
         Raises:
             TypeError: If `func_name` is not a string.
@@ -369,43 +417,10 @@ class CacheManager:
         func_name = self._validate_cache_key(func_name, "func_name")
 
         if func_name not in self.caches:
-            file_path = self._get_file_path(func_name)
-
-            if os.path.exists(file_path):
-                try:
-                    with open(file_path, encoding = 'utf-8') as cache:
-                        loaded_cache = json.load(cache)
-
-                    if not isinstance(loaded_cache, dict):
-                        raise ValueError("top-level JSON value is not an object")
-
-                    self.caches[func_name] = loaded_cache
-
-                except ValueError as e:
-                    # JSONDecodeError and UnicodeDecodeError are ValueErrors. Keep the bad file for manual
-                    # recovery instead of letting the next save overwrite it.
-                    quarantine_path = self._quarantine_corrupt_cache_file(file_path)
-                    location = (
-                        f"moved it to '{quarantine_path}'"
-                        if quarantine_path is not None
-                        else "could not move it aside"
-                    )
-
-                    logger.warning(
-                        "Cache file '%s' is corrupted; %s. Details: %s",
-                        file_path, location, e
-                    )
-                    self.caches[func_name] = {}
-
-                except OSError as e:
-                    logger.warning(
-                        "Cache file '%s' is unreadable; starting with an empty in-memory cache. Details: %s",
-                        file_path, e
-                    )
-                    self.caches[func_name] = {}
-
-            else:
-                self.caches[func_name] = {}
+            self._initialize_sqlite()
+            self._migrate_legacy_json_cache(func_name)
+            self.caches[func_name] = self._rebuild_function_cache_from_sqlite(func_name)
+            self._baselines[func_name] = copy.deepcopy(self.caches[func_name])
 
         return self.caches[func_name]
 
@@ -433,11 +448,28 @@ class CacheManager:
 
     def save_function_cache(self, func_name: str):
         """
-        Persist the in-memory cache for a function to disk as JSON.
+        Persist newly added, changed, or removed entries of a function cache to SQLite.
 
-        The JSON is written to a temporary file in the cache directory and then
-        moved over the target with `os.replace`, so an interrupted or failed
-        save leaves the previous cache file intact instead of truncated.
+        The live in-memory cache is diffed against the deep baseline snapshot
+        captured at load time (``_baselines[func_name]``). Entries that were
+        newly added or whose value changed are written, and every baseline
+        ``(bucket, key)`` identity no longer present in the live cache — including
+        the keys of an entirely removed bucket — is deleted. This detects nested
+        JSON-compatible mutations and explicit ``None`` because each changed
+        value is compared as a whole and then re-serialized. Serialization
+        happens first; additions, changes, and removals are then applied
+        together, in one explicit ``BEGIN IMMEDIATE`` transaction: added and
+        changed rows use ``INSERT OR REPLACE`` conflict semantics so that writes
+        to the same key resolve to the last committed writer while disjoint keys
+        merge, and each removed identity is deleted with an exact
+        ``(func_name, bucket, key)`` ``DELETE`` so no broad bucket delete is ever
+        issued.
+
+        The deep baseline is advanced to a copy of the live cache only after the
+        transaction commits. Serialization, locking, transaction, or commit
+        failures are logged and swallowed: the transaction is rolled back, the
+        baseline is left unchanged, and the pending in-memory changes are
+        preserved so the next save re-diffs against the same baseline and retries.
 
         Args:
             func_name (str): Function identifier whose cache should be written.
@@ -450,35 +482,93 @@ class CacheManager:
         if func_name not in self.caches:
             self.caches[func_name] = {}
 
-        os.makedirs(self.cache_dir_path, exist_ok = True)
+        live_cache = self.caches[func_name]
+        baseline = self._baselines.get(func_name)
 
-        file_path = self._get_file_path(func_name)
+        if not isinstance(baseline, dict):
+            baseline = {}
 
-        temp_path = None
+        prepared_entries = []
+        removal_identities = []
+        created_at = datetime.now(UTC).isoformat()
 
         try:
-            with tempfile.NamedTemporaryFile(
-                'w',
-                encoding = 'utf-8',
-                dir = self.cache_dir_path,
-                prefix = f".{func_name}_cache.",
-                suffix = ".tmp",
-                delete = False
-            ) as f:
-                temp_path = f.name
-                json.dump(self.caches[func_name], f, ensure_ascii = False, indent = 4)
-                f.flush()
-                os.fsync(f.fileno())
+            for bucket, entries in live_cache.items():
+                if not isinstance(entries, dict):
+                    continue
 
-            os.replace(temp_path, file_path)
-            temp_path = None
+                baseline_bucket = baseline.get(bucket)
 
-        except (TypeError, ValueError, OSError) as e:
-            logger.error("Could not save cache file '%s'. Details: %s", file_path, e)
+                if not isinstance(baseline_bucket, dict):
+                    baseline_bucket = {}
 
+                for key, value in entries.items():
+                    if key in baseline_bucket and baseline_bucket[key] == value:
+                        continue
+
+                    prepared_entries.append(
+                        (
+                            func_name,
+                            bucket,
+                            key,
+                            json.dumps(value, ensure_ascii = False),
+                            created_at,
+                        )
+                    )
+
+            for bucket, baseline_entries in baseline.items():
+                if not isinstance(baseline_entries, dict):
+                    continue
+
+                live_bucket = live_cache.get(bucket)
+
+                if isinstance(live_bucket, dict):
+                    removed_keys = [key for key in baseline_entries if key not in live_bucket]
+                else:
+                    removed_keys = list(baseline_entries)
+
+                for key in removed_keys:
+                    removal_identities.append((func_name, bucket, key))
+        except (TypeError, ValueError) as error:
+            logger.error("Could not save cache for '%s'. Details: %s", func_name, error)
+            return
+
+        if not prepared_entries and not removal_identities:
+            return
+
+        connection = None
+
+        try:
+            self._initialize_sqlite()
+            connection = self._connect_sqlite()
+            connection.execute("BEGIN IMMEDIATE")
+            if prepared_entries:
+                connection.executemany(
+                    """
+                    INSERT OR REPLACE INTO cache_entries
+                    (func_name, bucket, key, value_json, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    prepared_entries,
+                )
+            if removal_identities:
+                connection.executemany(
+                    "DELETE FROM cache_entries WHERE func_name = ? AND bucket = ? AND key = ?",
+                    removal_identities,
+                )
+            connection.commit()
+        except (sqlite3.Error, OSError) as error:
+            if connection is not None:
+                try:
+                    connection.rollback()
+                except Exception:
+                    pass
+            logger.error("Could not save cache for '%s'. Details: %s", func_name, error)
+        else:
+            self._baselines[func_name] = copy.deepcopy(live_cache)
         finally:
-            if temp_path is not None and os.path.exists(temp_path):
-                os.remove(temp_path)
+            if connection is not None:
+                connection.close()
 
 
     def delete_column_cache(self, func_name: str, col_name: str):
