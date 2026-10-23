@@ -1,10 +1,10 @@
 # bynat
 
-`bynat` is a Python utility package for tabular-data cleaning and small JSON-backed caches. Its cleaning API is exposed through subclasses of `pandas.DataFrame`; the caching API stores per-function dictionaries as JSON files.
+`bynat` is a Python utility package for tabular-data cleaning and small SQLite-backed caches. Its cleaning API is exposed through subclasses of `pandas.DataFrame`; the caching API stores per-function dictionaries in a SQLite database.
 
 ## Status
 
-Version `0.2.0` is the project version declared in `pyproject.toml`. See [CHANGELOG.md](CHANGELOG.md) for behavior changes since `0.1.1` and [ROADMAP.md](./docs/ROADMAP.md) for planned work.
+Version `0.3.0` is the project version declared in `pyproject.toml`. See [CHANGELOG.md](CHANGELOG.md) for behavior changes since `0.1.1` and [ROADMAP.md](./docs/ROADMAP.md) for planned work.
 
 ## Installation
 
@@ -59,7 +59,7 @@ The subpackage `__init__.py` files re-export the names listed by each implementa
 
 ### `CacheManager`
 
-`CacheManager` manages JSON files named `<func_name>_cache.json` under `cache_dir`. When `cache_dir` is omitted (here and in `BaseData`, `JsonFile`, and `CsvFile`), the `BYNAT_CACHE_DIR` environment variable is used if set, otherwise `Settings/Cache Data/Automated`. Relative cache paths are resolved from the current working directory; `~` and environment variables are expanded. Cache directories are created when a cache is saved, not when the manager is constructed.
+`CacheManager` stores each function's cache as rows in a SQLite database named `cache.sqlite3` under `cache_dir`. When `cache_dir` is omitted (here and in `BaseData`, `JsonFile`, and `CsvFile`), the `BYNAT_CACHE_DIR` environment variable is used if set, otherwise `Settings/Cache Data/Automated`. Relative cache paths are resolved from the current working directory; `~` and environment variables are expanded. The cache directory and database are created lazily: constructing a manager creates neither, and the SQLite backend is created on first cache access or on the first save of in-memory changes. Legacy `<func_name>_cache.json` files, if present, are read only for a one-time migration into SQLite.
 
 ```python
 from pathlib import Path
@@ -75,16 +75,16 @@ loaded = cache.load_function_cache("translate_categorical_column")
 assert loaded["status"]["pending"] == "Pending"
 ```
 
-Cache keys must be non-empty strings and cannot contain path separators. A cache file that is not a valid JSON object is renamed to `<name>.corrupt.<timestamp>` (so its data can be recovered by hand), logged as a warning, and treated as an empty dictionary. Saves are atomic: the JSON is written to a temporary file that replaces the old one. JSON serialization errors and file-write errors are logged rather than raised by `save_function_cache`, and the previous file is kept.
+Cache keys must be non-empty strings and cannot contain path separators. Values are JSON-serialized inside SQLite rows, so supported values stay JSON-compatible: strings, numbers, `None`, lists, and dictionaries. `save_function_cache` applies the added, changed, and removed entries in one SQLite transaction; serialization, locking, or commit failures are logged rather than raised, committed rows stay intact, and the pending in-memory changes are kept so the next save retries them. A legacy `<func_name>_cache.json` file is migrated into SQLite at most once: existing SQLite values take precedence over stale JSON, malformed or non-object files are quarantined to a `.corrupt` name for manual recovery, and unsupported nested structures are left in place, unmarked, for recovery.
 
 ### CacheManager methods and parameters
 
 | Method | Parameters | Behavior |
 | --- | --- | --- |
-| `load_function_cache(func_name)` | `func_name: str` | Load `<func_name>_cache.json`, or return/create an in-memory empty dictionary when it does not exist. |
-| `get_column_cache(func_name, col_name)` | `func_name: str`, `col_name: str` | Return/create a nested dictionary under `col_name`. |
-| `save_function_cache(func_name)` | `func_name: str` | Atomically write the in-memory function cache as indented UTF-8 JSON. |
-| `delete_column_cache(func_name, col_name)` | `func_name: str`, `col_name: str` | Delete a nested bucket and save the function cache; log an `INFO` message when the bucket is absent or deleted. |
+| `load_function_cache(func_name)` | `func_name: str` | Return the function's in-memory cache loaded from SQLite, creating the backend on first access; any legacy JSON is migrated once, and a function with no entries returns an empty dictionary. |
+| `get_column_cache(func_name, col_name)` | `func_name: str`, `col_name: str` | Return or create the ordinary mutable nested dictionary under `col_name`. |
+| `save_function_cache(func_name)` | `func_name: str` | Write the added, changed, and removed entries to SQLite in one transaction; log failures without raising and keep pending changes for retry. |
+| `delete_column_cache(func_name, col_name)` | `func_name: str`, `col_name: str` | Delete a nested bucket and save; the deletion removes only rows the manager already knew about, preserving concurrent additions and unrelated buckets or functions. Logs an `INFO` message when the bucket is absent or deleted. |
 
 `_validate_cache_key` and `_get_file_path` are implementation helpers and are not part of the public API.
 
@@ -207,24 +207,26 @@ translated = records.translate_categorical_column(
 | `truncate_after_substring` | `inplace=False`, `regex=True`, `**target_cols_and_substrings` | Split named columns at one or more substring/regex delimiters and keep the text before the first delimiter. |
 | `fill_missing_coordinates` | `*fallback_cols`, keyword-only `lat_col`, `long_col`, `save_every=1000`, `user_agent="data_cleaning_core_geocoder"`, `retry_not_found=False`, `inplace=False` | Build location queries from fallback columns and geocode missing coordinates with `geopy`/Nominatim. A failed query is retried with its leftmost part dropped (`"street, city, country"` → `"city, country"` → `"country"`). Results and not-found queries are cached; pass `retry_not_found=True` to re-query misses. Set `user_agent` to identify your application, as Nominatim's usage policy requires. |
 | `convert_to_usd` | `*target_cols`, keyword-only `country_col`, `year_col`, `new_cols=True`, `round_decimals=None`, `inplace=False` | Infer country currencies with `pycountry`, fetch the yearly mean Yahoo Finance rate with `yfinance` (looking back to earlier years when a year has no data), cache lookups, and divide target values by the rate. Unknown countries and past years without data are cached as misses; network errors are not cached. |
-| `handle_outliers` | `*target_cols`, keyword-only `hierarchy_cols`, `min_samples=5`, `inplace=False` | Replace hierarchical-IQR outliers with `NaN`, progressively relaxing the grouping hierarchy. |
-| `drop_outliers` | `*target_cols`, keyword-only `hierarchy_cols`, `min_samples=5`, `inplace=False` | Drop rows containing hierarchical-IQR outliers. Rows are dropped by position, so duplicated index labels are safe. |
-| `fill_missing` | `*target_cols`, `strategy="median"`, `hierarchy_cols=None`, `inplace=False` | Fill missing values progressively through a grouping hierarchy using `median`, `mean`, `mode`, or the accepted alias `mod`. |
+| `handle_outliers` | `*target_cols`, keyword-only `hierarchy_cols`, `min_samples=5`, `inplace=False`, `get_hierarchical_stats=False` | Replace hierarchical-IQR outliers with `NaN`, progressively relaxing the grouping hierarchy. When enabled, return the original-data hierarchical median statistics alongside the result, or directly for `inplace=True`. |
+| `drop_outliers` | `*target_cols`, keyword-only `hierarchy_cols`, `min_samples=5`, `inplace=False`, `get_hierarchical_stats=False` | Drop rows containing hierarchical-IQR outliers. Rows are dropped by position, so duplicated index labels are safe. When enabled, return the original-data hierarchical median statistics alongside the result, or directly for `inplace=True`. |
+| `fill_missing` | `*target_cols`, `strategy="median"`, `hierarchy_cols=None`, `inplace=False`, `get_hierarchical_stats=False` | Fill missing values progressively through a grouping hierarchy using `median`, `mean`, `mode`, or the accepted alias `mod`. When enabled, return statistics for the requested strategy computed before imputation, alongside the result, or directly for `inplace=True`. |
 | `get_hierarchical_stats` | `*target_cols`, `strategy="median"`, `hierarchy_cols=None`, `output_type=None` | Return one statistic row per group, hierarchy level, target, and strategy. See the example above for the output schema and `output_type` values. |
 | `categorize_by_reference` | `*source_cols`, keyword-only `target_col`, `reference`, `default_category="Other"`, `inplace=False` | Search combined text with an Aho-Corasick automaton and assign the longest matching reference keyword's category. |
-| `extract_entities_nlp` | `*source_cols`, keyword-only `lexicon_source`, `spacy_model="en_core_web_sm"`, `exclude_pos=None`, `save_every=1000`, `inplace=False`, `noisy_terms=None`, `noisey_terms=None`, `**target_cols_and_json_keys` | Load lexicon data from JSON or a dictionary, process text with spaCy, cache entity lists, and write them to target columns. `noisey_terms` is the backward-compatible misspelled alias. |
+| `extract_entities_nlp` | `*source_cols`, keyword-only `lexicon_source`, `spacy_model="en_core_web_sm"`, `exclude_pos=None`, `disable=("parser", "ner")`, `save_every=1000`, `inplace=False`, `noisy_terms=None`, `**target_cols_and_json_keys` | Load lexicon data from JSON or a dictionary, process text with spaCy, cache entity lists per target/model/pipeline configuration, and write them to target columns. `disable` accepts None, one component name, or an iterable; required lemmatization components are rejected and unknown names warn. |
 | `save_to_json` | `file_path`, `orient="records"`, `append=False`, `force_ascii=False`, `indent=4` | Write JSON only when changed, or append/deduplicate existing JSON rows. Rows with list or dictionary values are deduplicated by their JSON content. Datetime columns are formatted as `%Y-%m-%d %H:%M:%S`. |
 | `save_to_sql` | `table_name`, `database_type`, `database_user`, `database_password`, `database_host`, `database_port`, `database_name`, `database_driver=None`, `columns_types=None`, `chunk_size=None`, `fast_executemany=False`, `if_exists="append"`, `index=False` | Build a SQLAlchemy connection URL and write the frame with `DataFrame.to_sql`. SQLite uses `database_name` as a path; SQL Server requires `database_driver`. |
 
 Most methods skip missing source/target columns with a logged warning and return the original or copied frame, depending on `inplace`. Check the method's return value when chaining operations. Invalid arguments that would otherwise produce silently wrong results raise instead: an unknown `strategy`, an empty `file_path`, invalid `save_to_sql` connection settings, or an unusable `extract_entities_nlp` configuration.
 
+For `handle_outliers`, `drop_outliers`, and `fill_missing`, passing `get_hierarchical_stats=True` reuses `get_hierarchical_stats()` and computes the statistics from the original data before the cleaning operation changes values or rows. With `inplace=False`, the return value is `(result, stats)`; with `inplace=True`, the operation still mutates the original object and returns `stats` directly. The outlier methods use the default hierarchical `median` statistic; `fill_missing` uses its requested `strategy`.
+
 ## Limitations and operational notes
 
 - Optional integrations are lazy-loaded, so basic `bynat.cleaning` imports and core dataframe methods work with only `numpy` and `pandas`. Methods that need an absent integration raise a clear `ImportError` when called.
-- Translation uses `deep-translator` and may make external requests. Geocoding uses Nominatim through `geopy` with a one-second rate limit. Currency conversion uses Yahoo Finance history through `yfinance`. These services can fail, rate-limit, or change results; cached values persist locally as JSON.
-- NLP extraction requires a compatible spaCy model installed separately. A missing or unloadable model raises spaCy's `OSError`.
+- Translation uses `deep-translator` and may make external requests. Geocoding uses Nominatim through `geopy` with a one-second rate limit. Currency conversion uses Yahoo Finance history through `yfinance`. These services can fail, rate-limit, or change results; cached values persist locally in SQLite.
+- NLP extraction requires a compatible spaCy model installed separately. `extract_entities_nlp(disable=...)` accepts None, a component name, or an iterable, defaults to disabling `parser` and `ner`, rejects components required for lemmatization, and warns before continuing when a requested component is not in the loaded pipeline. A missing or unloadable model raises spaCy's `OSError`.
 - `save_to_sql` lets database exceptions propagate to the caller and always disposes its engine. It receives database credentials as ordinary arguments; do not hard-code secrets in application code.
-- Cache files are ordinary JSON. Each save writes a temporary file and atomically replaces the old one, so an interrupted save never leaves a truncated cache. Files are not locked: concurrent writers to the same cache can still overwrite each other's updates. Values must be JSON serializable.
+- Cache entries live in a single SQLite database rather than one JSON file per function. Saves run inside SQLite transactions and WAL checkpoints, so an interrupted or failed save is logged and rolled back without raising; rows from earlier successful saves stay intact and the pending in-memory changes are retried on the next save. Concurrent managers sharing one database merge disjoint key updates, and for a key written by more than one manager the last committed write wins. Values must be JSON serializable.
 - Messages go through the standard `logging` module under the `bynat` logger. Skipped columns and failed lookups are `WARNING`s and appear on stderr by default; progress and checkpoints are `INFO`. To see progress, or to silence warnings:
 
   ```python

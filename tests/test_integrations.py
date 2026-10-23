@@ -1,6 +1,7 @@
 """Offline tests for methods that call external services, using fake modules."""
 
 import json
+import sqlite3
 import sys
 import types
 
@@ -16,6 +17,50 @@ def _install(monkeypatch, name, **attrs):
         setattr(module, key, value)
     monkeypatch.setitem(sys.modules, name, module)
     return module
+
+
+def _install_fake_spacy(monkeypatch, pipe_calls, load_calls=None, pipe_names=None):
+    configured_pipe_names = pipe_names or ["tok2vec", "tagger", "parser", "ner"]
+
+    class Doc(list):
+        pass
+
+    class Nlp:
+        vocab = types.SimpleNamespace(strings={})
+        pipe_names = configured_pipe_names
+
+        def pipe(self, texts, **kwargs):
+            texts = list(texts)
+            pipe_calls.append((texts, kwargs))
+            return [Doc() for _ in texts]
+
+    class Matcher:
+        def __init__(self, vocab):
+            pass
+
+        def add(self, name, patterns):
+            pass
+
+        def __call__(self, doc):
+            return []
+
+    def load(model):
+        if load_calls is not None:
+            load_calls.append(model)
+        return Nlp()
+
+    _install(monkeypatch, "spacy", load=load)
+    _install(monkeypatch, "spacy.matcher", Matcher=Matcher)
+
+
+def _run_fake_nlp(frame, disable, spacy_model="en_core_web_sm"):
+    return frame.extract_entities_nlp(
+        "text",
+        lexicon_source={"skills": ["python"]},
+        spacy_model=spacy_model,
+        disable=disable,
+        skills="skills",
+    )
 
 
 def test_translate_categorical_column_translates_each_unique_value_once(monkeypatch, tmp_path):
@@ -105,8 +150,13 @@ def test_fill_missing_coordinates_shortens_queries_and_caches_misses(monkeypatch
     assert result[["lat", "lng"]].iloc[1].isna().all()
     assert result[["lat", "lng"]].iloc[2].tolist() == [48.8, 2.3]
 
-    cache = json.loads((tmp_path / "fill_missing_coordinates_cache.json").read_text(encoding="utf-8"))
-    assert cache["geocode_queries"]["Nowhere Rd, Atlantis"] is None
+    with sqlite3.connect(frame.cache_manager._get_database_path()) as connection:
+        value_json = connection.execute(
+            "SELECT value_json FROM cache_entries "
+            "WHERE func_name = 'fill_missing_coordinates' "
+            "AND bucket = 'geocode_queries' AND key = 'Nowhere Rd, Atlantis'"
+        ).fetchone()[0]
+    assert json.loads(value_json) is None
 
     calls.clear()
     frame.fill_missing_coordinates("street", "city", "country", lat_col="lat", long_col="lng")
@@ -170,14 +220,68 @@ def test_convert_to_usd_looks_back_and_caches_missing_years(monkeypatch, tmp_pat
     assert result.loc["d", "salary_usd"] == 2.0
     assert fetches == [("EGP=X", 2020), ("EGP=X", 2019)]
 
-    cache = json.loads((tmp_path / "convert_to_usd_cache.json").read_text(encoding="utf-8"))
-    assert cache["currency_codes"]["Atlantis"] is None
-    assert cache["exchange_rates"]["EGP_2020"] is None
-    assert cache["exchange_rates"]["EGP_2019"] == 17.0
+    with sqlite3.connect(frame.cache_manager._get_database_path()) as connection:
+        currency_codes = {
+            key: json.loads(value_json)
+            for key, value_json in connection.execute(
+                "SELECT key, value_json FROM cache_entries "
+                "WHERE func_name = 'convert_to_usd' AND bucket = 'currency_codes'"
+            )
+        }
+        exchange_rates = {
+            key: json.loads(value_json)
+            for key, value_json in connection.execute(
+                "SELECT key, value_json FROM cache_entries "
+                "WHERE func_name = 'convert_to_usd' AND bucket = 'exchange_rates'"
+            )
+        }
+    assert currency_codes["Atlantis"] is None
+    assert exchange_rates["EGP_2020"] is None
+    assert exchange_rates["EGP_2019"] == 17.0
 
     fetches.clear()
     frame.convert_to_usd("salary", country_col="country", year_col="year")
     assert fetches == []
+
+
+def test_extract_entities_nlp_default_disable_reaches_both_pipe_calls(monkeypatch, tmp_path):
+    pipe_calls = []
+
+    class Doc(list):
+        pass
+
+    class Nlp:
+        vocab = types.SimpleNamespace(strings={})
+        pipe_names = ["tok2vec", "tagger", "parser", "ner"]
+
+        def pipe(self, texts, **kwargs):
+            texts = list(texts)
+            pipe_calls.append((texts, kwargs))
+            return [Doc() for _ in texts]
+
+    class Matcher:
+        def __init__(self, vocab):
+            pass
+
+        def add(self, name, patterns):
+            pass
+
+        def __call__(self, doc):
+            return []
+
+    _install(monkeypatch, "spacy", load=lambda model: Nlp())
+    _install(monkeypatch, "spacy.matcher", Matcher=Matcher)
+
+    frame = BaseData({"text": ["python"]}, cache_dir=tmp_path)
+    result = frame.extract_entities_nlp(
+        "text", lexicon_source={"skills": ["python"]}, skills="skills"
+    )
+
+    assert result["skills"].tolist() == [[]]
+    assert [call[1]["disable"] for call in pipe_calls] == [
+        ("parser", "ner"),
+        ("parser", "ner"),
+    ]
 
 
 def test_extract_entities_nlp_skips_unused_pipes_and_reuses_cache(monkeypatch, tmp_path):
@@ -188,6 +292,7 @@ def test_extract_entities_nlp_skips_unused_pipes_and_reuses_cache(monkeypatch, t
 
     class Nlp:
         vocab = types.SimpleNamespace(strings={})
+        pipe_names = ["tok2vec", "tagger", "parser", "ner"]
 
         def pipe(self, texts, **kwargs):
             texts = list(texts)
@@ -215,11 +320,116 @@ def test_extract_entities_nlp_skips_unused_pipes_and_reuses_cache(monkeypatch, t
     assert result["skills"].tolist() == [[], [], []]
     text_pipe = pipe_calls[-1]
     assert text_pipe[0] == ["python and sql", "excel"]
-    assert text_pipe[1]["disable"] == ["parser", "ner"]
+    assert text_pipe[1]["disable"] == ("parser", "ner")
 
     pipe_calls.clear()
     frame.extract_entities_nlp("text", lexicon_source=lexicon, skills="skills")
     assert pipe_calls == []
+
+
+def test_extract_entities_nlp_custom_disable_reaches_both_pipe_calls(monkeypatch, tmp_path):
+    pipe_calls = []
+    _install_fake_spacy(monkeypatch, pipe_calls)
+    frame = BaseData({"text": ["python"]}, cache_dir=tmp_path)
+
+    _run_fake_nlp(frame, ("ner", "parser"))
+
+    assert [call[1]["disable"] for call in pipe_calls] == [
+        ("ner", "parser"),
+        ("ner", "parser"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("disable", "expected"),
+    [("ner", ("ner",)), (None, ())],
+)
+def test_extract_entities_nlp_normalizes_single_string_and_none(
+    monkeypatch, tmp_path, disable, expected
+):
+    pipe_calls = []
+    _install_fake_spacy(monkeypatch, pipe_calls)
+    frame = BaseData({"text": ["python"]}, cache_dir=tmp_path)
+
+    _run_fake_nlp(frame, disable)
+
+    assert [call[1]["disable"] for call in pipe_calls] == [expected, expected]
+
+
+@pytest.mark.parametrize("disable", ["tok2vec", "tagger", "attribute_ruler", "lemmatizer", "morphologizer"])
+def test_extract_entities_nlp_rejects_required_disable_before_spacy_load(
+    monkeypatch, tmp_path, disable
+):
+    load_calls = []
+    _install_fake_spacy(monkeypatch, [], load_calls=load_calls)
+    frame = BaseData({"text": ["python"]}, cache_dir=tmp_path)
+
+    with pytest.raises(ValueError, match=disable):
+        _run_fake_nlp(frame, disable)
+
+    assert load_calls == []
+
+
+def test_extract_entities_nlp_reports_all_required_disabled_components(monkeypatch, tmp_path):
+    load_calls = []
+    _install_fake_spacy(monkeypatch, [], load_calls=load_calls)
+    frame = BaseData({"text": ["python"]}, cache_dir=tmp_path)
+
+    with pytest.raises(ValueError, match="attribute_ruler.*lemmatizer"):
+        _run_fake_nlp(frame, ("lemmatizer", "attribute_ruler"))
+
+    assert load_calls == []
+
+
+def test_extract_entities_nlp_warns_for_unknown_disable_and_continues(monkeypatch, tmp_path, caplog):
+    pipe_calls = []
+    _install_fake_spacy(monkeypatch, pipe_calls, pipe_names=["tok2vec", "tagger", "parser", "ner"])
+    frame = BaseData({"text": ["python"]}, cache_dir=tmp_path)
+
+    result = _run_fake_nlp(frame, ("parser", "sentencizer"))
+
+    assert result["skills"].tolist() == [[]]
+    assert len(pipe_calls) == 2
+    warning = " ".join(record.getMessage() for record in caplog.records)
+    assert "sentencizer" in warning
+    assert "tok2vec" in warning
+    assert "parser" not in warning.split("not present", 1)[0]
+
+
+def test_extract_entities_nlp_different_disable_configs_do_not_reuse_cache(monkeypatch, tmp_path):
+    pipe_calls = []
+    _install_fake_spacy(monkeypatch, pipe_calls)
+    frame = BaseData({"text": ["python"]}, cache_dir=tmp_path)
+
+    _run_fake_nlp(frame, ("parser", "ner"))
+    _run_fake_nlp(frame, ("parser",))
+
+    assert len(pipe_calls) == 4
+
+
+def test_extract_entities_nlp_different_models_do_not_reuse_cache(monkeypatch, tmp_path):
+    pipe_calls = []
+    load_calls = []
+    _install_fake_spacy(monkeypatch, pipe_calls, load_calls=load_calls)
+    frame = BaseData({"text": ["python"]}, cache_dir=tmp_path)
+
+    _run_fake_nlp(frame, ("parser", "ner"), spacy_model="model_a")
+    _run_fake_nlp(frame, ("parser", "ner"), spacy_model="model_b")
+
+    assert len(pipe_calls) == 4
+    assert load_calls == ["model_a", "model_b"]
+
+
+def test_extract_entities_nlp_equivalent_disable_configs_reuse_cache(monkeypatch, tmp_path):
+    pipe_calls = []
+    _install_fake_spacy(monkeypatch, pipe_calls)
+    frame = BaseData({"text": ["python"]}, cache_dir=tmp_path)
+
+    _run_fake_nlp(frame, ("ner", " parser "))
+    _run_fake_nlp(frame, ("parser", "ner"))
+
+    assert len(pipe_calls) == 2
+
 
 
 def test_categorize_by_reference_with_real_pyahocorasick(tmp_path):
