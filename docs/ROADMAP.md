@@ -51,7 +51,7 @@ This roadmap is written against the code as it is, not as it might be. Every ite
 
 Priority: **P1** correctness or data safety, **P2** performance or maintainability, **P3** nice to have. Effort: **S** under a day, **M** a few days, **L** a week or more.
 
-### Milestone 3 (`0.3.0`): cache and enrichment engine
+### Milestone 3 (`0.4.0`): cache and enrichment engine
 
 #### `ENRICH-01`: one cached-lookup engine with injectable providers (P2, M)
 - **Problem:** `translate_categorical_column`, `translate_conditional_column`, `fill_missing_coordinates`, `convert_to_usd`, and `extract_entities_nlp` each re-implement the same loop: unique values, cache lookup, fetch misses, checkpoint every `save_every`, map back. Providers are hard-coded (`GoogleTranslator`, `Nominatim`, `yfinance`).
@@ -77,11 +77,13 @@ Priority: **P1** correctness or data safety, **P2** performance or maintainabili
 - **Plan:** one private generator of per-level outlier masks, with `groupby(...).quantile([0.25, 0.75])` mapped back through `transform`. The two public methods become thin wrappers.
 - **Done when:** existing outlier tests pass unchanged and a benchmark is recorded.
 
-### Milestone 4 (`0.4.0`): API shape. Each item needs decision D-03 first.
+### Milestone 4 (`0.5.0`): API shape. Each item needs decision D-03 first.
 
 #### `API-01`: pandas accessor (P2, L)
 - **Problem:** subclassing `DataFrame` is fragile. `_constructor` (line 124) builds a new `CacheManager` on every pandas operation (line 154), `_metadata` is dropped by many operations, and pandas recommends accessors for extensions.
 - **Plan:** register `df.bynat.<method>()` via `pd.api.extensions.register_dataframe_accessor`, sharing implementations with `BaseData`. Keep `BaseData`, `JsonFile`, and `CsvFile` as thin deprecated wrappers for one minor version. Replace the loader subclasses with `bynat.read_json` and `bynat.read_csv` helpers.
+
+### Milestone 4 (`0.6.0`): API shape. Each item needs decision D-03 first.
 
 #### `API-02`: retire `inplace` (P2, M)
 - **Problem:** every transformation accepts `inplace`, but the early-exit paths return `self` (an alias) while normal paths return a copy (`return self if not inplace else None`, 15 sites starting at line 312). `split_list_objects(inplace=True, explode_rows=True)` cannot work, as its docstring admits. pandas itself is moving away from `inplace` under Copy-on-Write.
