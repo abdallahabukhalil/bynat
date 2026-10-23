@@ -20,6 +20,10 @@ None.
 ### Changed
 
 - Removed the deprecated `noisey_terms` parameter; use `noisy_terms` instead.
+- `CacheManager` stores each function cache as rows in a SQLite database named `cache.sqlite3` instead of one JSON file per function, while keeping `load_function_cache`, `get_column_cache`, `save_function_cache`, and `delete_column_cache` and their ordinary dictionary results.
+- Legacy `<func_name>_cache.json` files are migrated into SQLite at most once; existing SQLite rows take precedence over stale JSON; malformed or non-object JSON is quarantined to a `.corrupt` path for recovery, while valid JSON with unsupported nested bucket shapes remains in place, unmarked, for recovery.
+- `save_function_cache` writes only the added, changed, and removed entries in one transaction, so a failed save keeps the previous state for retry, concurrent writers merge disjoint keys, and same-key writes take the last committed value.
+- Deleting a column bucket removes only the entries known when the cache was loaded, so rows added concurrently or in unrelated buckets are preserved.
 
 ## 0.2.0
 

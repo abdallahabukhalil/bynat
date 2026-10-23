@@ -1,6 +1,6 @@
 # bynat
 
-`bynat` is a Python utility package for tabular-data cleaning and small JSON-backed caches. Its cleaning API is exposed through subclasses of `pandas.DataFrame`; the caching API stores per-function dictionaries as JSON files.
+`bynat` is a Python utility package for tabular-data cleaning and small SQLite-backed caches. Its cleaning API is exposed through subclasses of `pandas.DataFrame`; the caching API stores per-function dictionaries in a SQLite database.
 
 ## Status
 
@@ -59,7 +59,7 @@ The subpackage `__init__.py` files re-export the names listed by each implementa
 
 ### `CacheManager`
 
-`CacheManager` manages JSON files named `<func_name>_cache.json` under `cache_dir`. When `cache_dir` is omitted (here and in `BaseData`, `JsonFile`, and `CsvFile`), the `BYNAT_CACHE_DIR` environment variable is used if set, otherwise `Settings/Cache Data/Automated`. Relative cache paths are resolved from the current working directory; `~` and environment variables are expanded. Cache directories are created when a cache is saved, not when the manager is constructed.
+`CacheManager` stores each function's cache as rows in a SQLite database named `cache.sqlite3` under `cache_dir`. When `cache_dir` is omitted (here and in `BaseData`, `JsonFile`, and `CsvFile`), the `BYNAT_CACHE_DIR` environment variable is used if set, otherwise `Settings/Cache Data/Automated`. Relative cache paths are resolved from the current working directory; `~` and environment variables are expanded. The cache directory and database are created lazily: constructing a manager creates neither, and the SQLite backend is created on first cache access or on the first save of in-memory changes. Legacy `<func_name>_cache.json` files, if present, are read only for a one-time migration into SQLite.
 
 ```python
 from pathlib import Path
@@ -75,16 +75,16 @@ loaded = cache.load_function_cache("translate_categorical_column")
 assert loaded["status"]["pending"] == "Pending"
 ```
 
-Cache keys must be non-empty strings and cannot contain path separators. A cache file that is not a valid JSON object is renamed to `<name>.corrupt.<timestamp>` (so its data can be recovered by hand), logged as a warning, and treated as an empty dictionary. Saves are atomic: the JSON is written to a temporary file that replaces the old one. JSON serialization errors and file-write errors are logged rather than raised by `save_function_cache`, and the previous file is kept.
+Cache keys must be non-empty strings and cannot contain path separators. Values are JSON-serialized inside SQLite rows, so supported values stay JSON-compatible: strings, numbers, `None`, lists, and dictionaries. `save_function_cache` applies the added, changed, and removed entries in one SQLite transaction; serialization, locking, or commit failures are logged rather than raised, committed rows stay intact, and the pending in-memory changes are kept so the next save retries them. A legacy `<func_name>_cache.json` file is migrated into SQLite at most once: existing SQLite values take precedence over stale JSON, malformed or non-object files are quarantined to a `.corrupt` name for manual recovery, and unsupported nested structures are left in place, unmarked, for recovery.
 
 ### CacheManager methods and parameters
 
 | Method | Parameters | Behavior |
 | --- | --- | --- |
-| `load_function_cache(func_name)` | `func_name: str` | Load `<func_name>_cache.json`, or return/create an in-memory empty dictionary when it does not exist. |
-| `get_column_cache(func_name, col_name)` | `func_name: str`, `col_name: str` | Return/create a nested dictionary under `col_name`. |
-| `save_function_cache(func_name)` | `func_name: str` | Atomically write the in-memory function cache as indented UTF-8 JSON. |
-| `delete_column_cache(func_name, col_name)` | `func_name: str`, `col_name: str` | Delete a nested bucket and save the function cache; log an `INFO` message when the bucket is absent or deleted. |
+| `load_function_cache(func_name)` | `func_name: str` | Return the function's in-memory cache loaded from SQLite, creating the backend on first access; any legacy JSON is migrated once, and a function with no entries returns an empty dictionary. |
+| `get_column_cache(func_name, col_name)` | `func_name: str`, `col_name: str` | Return or create the ordinary mutable nested dictionary under `col_name`. |
+| `save_function_cache(func_name)` | `func_name: str` | Write the added, changed, and removed entries to SQLite in one transaction; log failures without raising and keep pending changes for retry. |
+| `delete_column_cache(func_name, col_name)` | `func_name: str`, `col_name: str` | Delete a nested bucket and save; the deletion removes only rows the manager already knew about, preserving concurrent additions and unrelated buckets or functions. Logs an `INFO` message when the bucket is absent or deleted. |
 
 `_validate_cache_key` and `_get_file_path` are implementation helpers and are not part of the public API.
 
@@ -223,10 +223,10 @@ For `handle_outliers`, `drop_outliers`, and `fill_missing`, passing `get_hierarc
 ## Limitations and operational notes
 
 - Optional integrations are lazy-loaded, so basic `bynat.cleaning` imports and core dataframe methods work with only `numpy` and `pandas`. Methods that need an absent integration raise a clear `ImportError` when called.
-- Translation uses `deep-translator` and may make external requests. Geocoding uses Nominatim through `geopy` with a one-second rate limit. Currency conversion uses Yahoo Finance history through `yfinance`. These services can fail, rate-limit, or change results; cached values persist locally as JSON.
+- Translation uses `deep-translator` and may make external requests. Geocoding uses Nominatim through `geopy` with a one-second rate limit. Currency conversion uses Yahoo Finance history through `yfinance`. These services can fail, rate-limit, or change results; cached values persist locally in SQLite.
 - NLP extraction requires a compatible spaCy model installed separately. `extract_entities_nlp(disable=...)` accepts None, a component name, or an iterable, defaults to disabling `parser` and `ner`, rejects components required for lemmatization, and warns before continuing when a requested component is not in the loaded pipeline. A missing or unloadable model raises spaCy's `OSError`.
 - `save_to_sql` lets database exceptions propagate to the caller and always disposes its engine. It receives database credentials as ordinary arguments; do not hard-code secrets in application code.
-- Cache files are ordinary JSON. Each save writes a temporary file and atomically replaces the old one, so an interrupted save never leaves a truncated cache. Files are not locked: concurrent writers to the same cache can still overwrite each other's updates. Values must be JSON serializable.
+- Cache entries live in a single SQLite database rather than one JSON file per function. Saves run inside SQLite transactions and WAL checkpoints, so an interrupted or failed save is logged and rolled back without raising; rows from earlier successful saves stay intact and the pending in-memory changes are retried on the next save. Concurrent managers sharing one database merge disjoint key updates, and for a key written by more than one manager the last committed write wins. Values must be JSON serializable.
 - Messages go through the standard `logging` module under the `bynat` logger. Skipped columns and failed lookups are `WARNING`s and appear on stderr by default; progress and checkpoints are `INFO`. To see progress, or to silence warnings:
 
   ```python

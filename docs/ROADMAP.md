@@ -4,10 +4,10 @@ This roadmap is written against the code as it is, not as it might be. Every ite
 
 ## 1. Project context
 
-`bynat` is a small utility library (about 3,200 lines in `bynat/cleaning/Cleaning.py` and 260 in `bynat/caching/Caching.py`).
+`bynat` is a small utility library (about 3,200 lines in `bynat/cleaning/Cleaning.py` and 595 in `bynat/caching/Caching.py`).
 
 - **`bynat.cleaning.BaseData`** subclasses `pandas.DataFrame` and adds column helpers, text extraction, hierarchical outlier handling, imputation and statistics, external-service enrichment (translation, geocoding, currency, spaCy), and JSON/SQL export. `JsonFile` and `CsvFile` are loading subclasses.
-- **`bynat.caching.CacheManager`** keeps one JSON file per function (`<func_name>_cache.json`) holding nested dictionaries keyed by column. Its public methods are `load_function_cache`, `get_column_cache`, `save_function_cache`, and `delete_column_cache`. There is no `get`, `set`, `clear`, or TTL API.
+- **`bynat.caching.CacheManager`** keeps one SQLite database per cache directory (`cache.sqlite3`) holding nested dictionaries keyed by column, importing legacy `<func_name>_cache.json` files on first read. Its public methods are `load_function_cache`, `get_column_cache`, `save_function_cache`, and `delete_column_cache`. There is no `get`, `set`, `clear`, or TTL API.
 
 ## 2. Principles
 
@@ -20,7 +20,7 @@ This roadmap is written against the code as it is, not as it might be. Every ite
 ## 3. Current state (`0.2.0`)
 
 - **Python:** `>=3.11`. CI runs Ubuntu and Windows on 3.11 and 3.13, a Ruff lint job, and an extras job (`.[categorization,sql]`).
-- **Tests:** 72 collected. `test_caching.py` 11, `test_cleaning.py` 26, `test_hierarchical_stats.py` 27, `test_integrations.py` 8. Three are skipped unless the `categorization` and `sql` extras are installed.
+- **Tests:** 151 full-suite tests passed; the focused cache tests live in `tests/test_caching.py`. Three are skipped unless the `categorization` and `sql` extras are installed.
 - **Lint:** `ruff check bynat tests` is clean with `E`, `F`, `W`, `I`, `UP` (`E501` ignored; see `pyproject.toml`).
 - **Row-wise iteration audit:** no `apply(axis=1)`, `iterrows`, or `itertuples` in `bynat/`. Unique-value loops exist in the enrichment methods by design (Principle 1).
 
@@ -45,63 +45,13 @@ This roadmap is written against the code as it is, not as it might be. Every ite
 | 0.2.0 | `save_to_sql` disposes its engine | `save_to_sql` |
 | 0.3.0 | `handle_outliers`, `drop_outliers`, and `fill_missing` optionally return original-data hierarchical statistics without changing their default return contracts | `BaseData.handle_outliers`, `BaseData.drop_outliers`, `BaseData.fill_missing`, `tests/test_hierarchical_stats.py` |
 | 0.3.0 | `extract_entities_nlp` accepts configurable spaCy pipeline components, validates required components, warns on unknown names, and isolates configuration-specific caches | `BaseData.extract_entities_nlp`, `tests/test_integrations.py` |
+| 0.3.0 | `CACHE-01` SQLite cache backend: per-directory key-value store that replaces full-file JSON rewrites, one-time legacy `*_cache.json` migration, delta-only checkpoint saves against deep baselines, `BEGIN IMMEDIATE` + WAL busy-timeout concurrency, and baseline-scoped `delete_column_cache` | `bynat/caching/Caching.py` (`CacheManager`), `tests/test_caching.py` |
 
 ## 4. Backlog
 
 Priority: **P1** correctness or data safety, **P2** performance or maintainability, **P3** nice to have. Effort: **S** under a day, **M** a few days, **L** a week or more.
 
 ### Milestone 3 (`0.3.0`): cache and enrichment engine
-
-#### `CACHE-01`: SQLite cache backend (P1, M)
-- **Problem:** `save_function_cache` rewrites the entire JSON file at every checkpoint, which costs O(n) per save and O(n²) over a long run. Concurrent writers to one cache still lose each other's updates; atomic replace does not prevent that.
-- **Plan:** a `sqlite3` key-value table per cache directory (`func_name`, `bucket`, `key`, `value_json`, `created_at`). SQLite provides atomic commits and cross-process locking with no new dependency, so there is no hand-rolled lock-directory protocol. Keep `get_column_cache` returning a dict-like object so call sites do not change. Read existing `*_cache.json` files once and import them.
-- **Done when:** a multi-process test writing disjoint keys loses nothing, an interrupted run keeps every committed checkpoint, and existing JSON caches are migrated by a test fixture.
-- **Not doing:** a versioned JSON envelope with `__bynat_type__` tags. Values the methods store are strings, numbers, `None`, and `[lat, lng]` pairs, which JSON already handles.
-
-**Execution policy:** Complete one checklist item at a time. Run the relevant tests or checks after each item, mark an item `[x]` only after its work and verification succeed, and leave it `[ ]` when work is partial or verification fails. Record blockers instead of marking incomplete work complete. Resume from the first unchecked item across sessions. The `CACHE-01` entry itself is not complete until every required subtask and every acceptance criterion above has been verified; checked subtasks must not be treated as milestone completion.
-
-**Implementation checklist:**
-
-- [x] **Resolve design decisions.**
-  - [x] Define deletion semantics: `delete_column_cache` removes only rows represented by the manager's last committed baseline for that function and bucket. Concurrent rows added after that baseline are preserved rather than being deleted by a stale bucket operation.
-  - [x] Define conflict semantics: concurrent writes to different `(func_name, bucket, key)` identities are merged; concurrent writes to the same identity use last committed writer wins. No silent conflict-resolution or retry policy is added to the public API.
-  - [x] Define malformed and unsupported JSON handling: invalid JSON or a non-object top level is quarantined using the existing `.corrupt.<timestamp>` behavior; unsupported nested bucket shapes are not imported or marked migrated, the source remains available for recovery, and the failure is logged explicitly rather than silently discarded.
-  - [x] Define save failures: preserve the current non-raising, logged-error behavior; roll back the SQLite transaction; and leave the in-memory baseline snapshot unchanged so the same pending delta can be retried.
-  - [x] Confirm transaction and initialization policy: lazily create the cache directory/database, use one explicit transaction per migration/save/delete operation, serialize writers with `BEGIN IMMEDIATE`, configure a finite busy timeout, enable WAL journaling, and use durable synchronous commits.
-  - [x] Confirm migration policy: guard migration with SQLite metadata, re-check the marker inside the write transaction, use idempotent inserts that never overwrite existing SQLite rows, and write the marker only after the complete migration commits.
-  - [x] Confirm compatibility: keep `load_function_cache`, `get_column_cache`, `save_function_cache`, and `delete_column_cache`; return ordinary mutable dictionaries; preserve direct indexing, assignment, membership, `.get`, iteration/equality, and explicit `None` values.
-  - [x] Record these decisions in the `CACHE-01` checklist and Decisions section below.
-- [x] **Implement SQLite infrastructure.**
-  - [x] Define the cache database path and lazy initialization without creating the cache directory during `CacheManager` construction.
-  - [x] Create the cache-entry and migration-metadata tables with the required primary key and `(func_name, bucket)` access index.
-  - [x] Implement connection configuration, explicit transaction handling, busy timeout, WAL mode, and durable synchronous behavior.
-- [x] **Implement legacy JSON migration.**
-  - [x] Detect each legacy `<func_name>_cache.json` source and record completed migrations in SQLite metadata.
-  - [x] Import valid nested bucket entries transactionally without overwriting existing SQLite rows.
-  - [x] Make migration retryable after parse, validation, insertion, or commit failures.
-  - [x] Handle concurrent initialization safely through SQLite transactions rather than a lock-directory protocol.
-  - [x] Preserve corrupt and unsupported JSON sources and log actionable failures.
-- [x] **Implement cache API integration.**
-  - [x] Reconstruct SQLite rows into the existing function-level and bucket-level dictionary shape.
-  - [x] Preserve the behavior and public signatures of all four `CacheManager` methods.
-  - [x] Track deep baseline snapshots for loaded and successfully committed function caches.
-  - [x] Save only added, changed, and removed entries so stale in-memory snapshots cannot erase disjoint concurrent updates.
-  - [x] Ensure bucket deletion cannot erase unrelated concurrent rows.
-- [x] **Add and update focused tests.**
-  - [x] Preserve existing API, validation, round-trip, corruption, serialization-error, and deletion regression coverage.
-  - [x] Add multi-process tests for disjoint-key writes and same-key last-commit-wins behavior.
-  - [x] Add migration tests for valid data, idempotency, existing SQLite conflicts, concurrent initialization, retry after failure, and malformed/unsupported JSON.
-  - [x] Add interruption and failed-transaction tests proving previously committed checkpoints remain available.
-  - [x] Add deletion-semantic tests covering concurrent additions and unrelated buckets.
-- [ ] **Update documentation.**
-  - [ ] Update the README caching section and operational notes after the implemented behavior is verified.
-  - [ ] Update `CHANGELOG.md` only after the implementation and acceptance tests are complete.
-  - [ ] Keep this checklist accurate after every completed step.
-- [ ] **Run final verification and review.**
-  - [ ] Run the complete pytest suite.
-  - [ ] Run `compileall`, Ruff, and repository diff/scope checks.
-  - [ ] Review the implementation for scope creep, stale-snapshot data loss, migration data loss, and API regressions.
-  - [ ] Verify every original `CACHE-01` acceptance criterion and only then move the completed item to the roadmap's completed-milestones table.
 
 #### `ENRICH-01`: one cached-lookup engine with injectable providers (P2, M)
 - **Problem:** `translate_categorical_column`, `translate_conditional_column`, `fill_missing_coordinates`, `convert_to_usd`, and `extract_entities_nlp` each re-implement the same loop: unique values, cache lookup, fetch misses, checkpoint every `save_every`, map back. Providers are hard-coded (`GoogleTranslator`, `Nominatim`, `yfinance`).
