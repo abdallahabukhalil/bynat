@@ -2,7 +2,7 @@
 
 ## 0.3.0
 
-This release adds optional hierarchical statistics to hierarchy-aware cleaning methods and configurable spaCy pipeline components while preserving existing default behavior.
+This release adds a SQLite-backed caching system with automatic migration from legacy JSON caches, safer concurrent cache updates, and improved cache persistence, alongside optional hierarchical statistics in hierarchy-aware cleaning methods and configurable spaCy pipeline components, while preserving existing default behavior.
 
 ### Breaking changes
 
