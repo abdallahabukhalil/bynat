@@ -87,12 +87,12 @@ Priority: **P1** correctness or data safety, **P2** performance or maintainabili
   - [x] Track deep baseline snapshots for loaded and successfully committed function caches.
   - [x] Save only added, changed, and removed entries so stale in-memory snapshots cannot erase disjoint concurrent updates.
   - [x] Ensure bucket deletion cannot erase unrelated concurrent rows.
-- [ ] **Add and update focused tests.**
-  - [ ] Preserve existing API, validation, round-trip, corruption, serialization-error, and deletion regression coverage.
-  - [ ] Add multi-process tests for disjoint-key writes and same-key last-commit-wins behavior.
-  - [ ] Add migration tests for valid data, idempotency, existing SQLite conflicts, concurrent initialization, retry after failure, and malformed/unsupported JSON.
-  - [ ] Add interruption and failed-transaction tests proving previously committed checkpoints remain available.
-  - [ ] Add deletion-semantic tests covering concurrent additions and unrelated buckets.
+- [x] **Add and update focused tests.**
+  - [x] Preserve existing API, validation, round-trip, corruption, serialization-error, and deletion regression coverage.
+  - [x] Add multi-process tests for disjoint-key writes and same-key last-commit-wins behavior.
+  - [x] Add migration tests for valid data, idempotency, existing SQLite conflicts, concurrent initialization, retry after failure, and malformed/unsupported JSON.
+  - [x] Add interruption and failed-transaction tests proving previously committed checkpoints remain available.
+  - [x] Add deletion-semantic tests covering concurrent additions and unrelated buckets.
 - [ ] **Update documentation.**
   - [ ] Update the README caching section and operational notes after the implemented behavior is verified.
   - [ ] Update `CHANGELOG.md` only after the implementation and acceptance tests are complete.
