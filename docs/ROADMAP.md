@@ -1,6 +1,6 @@
 # bynat Roadmap
 
-This roadmap is written against the code as it is, not as it might be. Every item names the real method, file, or test it refers to. Line numbers are as of `0.2.0` and drift; method names are the stable reference. If an item stops matching the code, fix the item before working on it.
+This roadmap is written against the code as it is, not as it might be. Every item names the real method, file, or test it refers to. Line numbers are as of `0.3.0` and drift; method names are the stable reference. If an item stops matching the code, fix the item before working on it.
 
 ## 1. Project context
 
@@ -17,7 +17,7 @@ This roadmap is written against the code as it is, not as it might be. Every ite
 4. **Minimal footprint.** Core dependencies stay `numpy` and `pandas`. Heavy integrations stay optional and are imported lazily with `_import_optional`. Prefer the standard library (`sqlite3`, `logging`, `tempfile`) over new dependencies.
 5. **Tests do not touch the network.** External services are replaced with fake modules (`tests/test_integrations.py`). Light extras with offline behavior (`pyahocorasick`, SQLAlchemy with SQLite) are also tested for real when installed.
 
-## 3. Current state (`0.2.0`)
+## 3. Current state (`0.3.0`)
 
 - **Python:** `>=3.11`. CI runs Ubuntu and Windows on 3.11 and 3.13, a Ruff lint job, and an extras job (`.[categorization,sql]`).
 - **Tests:** 151 full-suite tests passed; the focused cache tests live in `tests/test_caching.py`. Three are skipped unless the `categorization` and `sql` extras are installed.
@@ -83,11 +83,11 @@ Priority: **P1** correctness or data safety, **P2** performance or maintainabili
 - **Problem:** subclassing `DataFrame` is fragile. `_constructor` (line 124) builds a new `CacheManager` on every pandas operation (line 154), `_metadata` is dropped by many operations, and pandas recommends accessors for extensions.
 - **Plan:** register `df.bynat.<method>()` via `pd.api.extensions.register_dataframe_accessor`, sharing implementations with `BaseData`. Keep `BaseData`, `JsonFile`, and `CsvFile` as thin deprecated wrappers for one minor version. Replace the loader subclasses with `bynat.read_json` and `bynat.read_csv` helpers.
 
-### Milestone 4 (`0.6.0`): API shape. Each item needs decision D-03 first.
-
 #### `API-02`: retire `inplace` (P2, M)
 - **Problem:** every transformation accepts `inplace`, but the early-exit paths return `self` (an alias) while normal paths return a copy (`return self if not inplace else None`, 15 sites starting at line 312). `split_list_objects(inplace=True, explode_rows=True)` cannot work, as its docstring admits. pandas itself is moving away from `inplace` under Copy-on-Write.
 - **Plan:** always return a new object. Emit a `DeprecationWarning` when `inplace=True` is passed, and remove it in the following minor version.
+
+### Milestone 4 (`0.6.0`): API shape. Each item needs decision D-03 first.
 
 #### `ARCH-01`: split `Cleaning.py` into modules (P2, M)
 - **Plan:** `cleaning/columns.py` (rename, drop, reorder, move), `text.py` (keywords, truncate, categorize), `stats.py` (outliers, `fill_missing`, `get_hierarchical_stats`), `enrich/` (translate, geocode, currency, nlp, engine), and `io.py` (JSON, SQL, loaders). `bynat.cleaning` re-exports the same names, so imports do not change. Rename `Caching.py` and `Cleaning.py` to lowercase module names, with shims.
