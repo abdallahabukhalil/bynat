@@ -1,13 +1,13 @@
 # bynat Roadmap
 
-This roadmap is written against the code as it is, not as it might be. Every item names the real method, file, or test it refers to. Line numbers are as of `0.2.0` and drift; method names are the stable reference. If an item stops matching the code, fix the item before working on it.
+This roadmap is written against the code as it is, not as it might be. Every item names the real method, file, or test it refers to. Line numbers are as of `0.3.0` and drift; method names are the stable reference. If an item stops matching the code, fix the item before working on it.
 
 ## 1. Project context
 
-`bynat` is a small utility library (about 3,200 lines in `bynat/cleaning/Cleaning.py` and 260 in `bynat/caching/Caching.py`).
+`bynat` is a small utility library (about 3,200 lines in `bynat/cleaning/Cleaning.py` and 595 in `bynat/caching/Caching.py`).
 
 - **`bynat.cleaning.BaseData`** subclasses `pandas.DataFrame` and adds column helpers, text extraction, hierarchical outlier handling, imputation and statistics, external-service enrichment (translation, geocoding, currency, spaCy), and JSON/SQL export. `JsonFile` and `CsvFile` are loading subclasses.
-- **`bynat.caching.CacheManager`** keeps one JSON file per function (`<func_name>_cache.json`) holding nested dictionaries keyed by column. Its public methods are `load_function_cache`, `get_column_cache`, `save_function_cache`, and `delete_column_cache`. There is no `get`, `set`, `clear`, or TTL API.
+- **`bynat.caching.CacheManager`** keeps one SQLite database per cache directory (`cache.sqlite3`) holding nested dictionaries keyed by column, importing legacy `<func_name>_cache.json` files on first read. Its public methods are `load_function_cache`, `get_column_cache`, `save_function_cache`, and `delete_column_cache`. There is no `get`, `set`, `clear`, or TTL API.
 
 ## 2. Principles
 
@@ -17,10 +17,10 @@ This roadmap is written against the code as it is, not as it might be. Every ite
 4. **Minimal footprint.** Core dependencies stay `numpy` and `pandas`. Heavy integrations stay optional and are imported lazily with `_import_optional`. Prefer the standard library (`sqlite3`, `logging`, `tempfile`) over new dependencies.
 5. **Tests do not touch the network.** External services are replaced with fake modules (`tests/test_integrations.py`). Light extras with offline behavior (`pyahocorasick`, SQLAlchemy with SQLite) are also tested for real when installed.
 
-## 3. Current state (`0.2.0`)
+## 3. Current state (`0.3.0`)
 
 - **Python:** `>=3.11`. CI runs Ubuntu and Windows on 3.11 and 3.13, a Ruff lint job, and an extras job (`.[categorization,sql]`).
-- **Tests:** 72 collected. `test_caching.py` 11, `test_cleaning.py` 26, `test_hierarchical_stats.py` 27, `test_integrations.py` 8. Three are skipped unless the `categorization` and `sql` extras are installed.
+- **Tests:** 151 full-suite tests passed; the focused cache tests live in `tests/test_caching.py`. Three are skipped unless the `categorization` and `sql` extras are installed.
 - **Lint:** `ruff check bynat tests` is clean with `E`, `F`, `W`, `I`, `UP` (`E501` ignored; see `pyproject.toml`).
 - **Row-wise iteration audit:** no `apply(axis=1)`, `iterrows`, or `itertuples` in `bynat/`. Unique-value loops exist in the enrichment methods by design (Principle 1).
 
@@ -43,18 +43,15 @@ This roadmap is written against the code as it is, not as it might be. Every ite
 | 0.2.0 | Corrupted cache files are quarantined as `<name>.corrupt.<timestamp>` instead of being overwritten | `CacheManager.load_function_cache` |
 | 0.2.0 | `BYNAT_CACHE_DIR`, with the old relative default kept as the fallback | `bynat.caching.Caching.resolve_cache_dir` |
 | 0.2.0 | `save_to_sql` disposes its engine | `save_to_sql` |
+| 0.3.0 | `handle_outliers`, `drop_outliers`, and `fill_missing` optionally return original-data hierarchical statistics without changing their default return contracts | `BaseData.handle_outliers`, `BaseData.drop_outliers`, `BaseData.fill_missing`, `tests/test_hierarchical_stats.py` |
+| 0.3.0 | `extract_entities_nlp` accepts configurable spaCy pipeline components, validates required components, warns on unknown names, and isolates configuration-specific caches | `BaseData.extract_entities_nlp`, `tests/test_integrations.py` |
+| 0.3.0 | `CACHE-01` SQLite cache backend: per-directory key-value store that replaces full-file JSON rewrites, one-time legacy `*_cache.json` migration, delta-only checkpoint saves against deep baselines, `BEGIN IMMEDIATE` + WAL busy-timeout concurrency, and baseline-scoped `delete_column_cache` | `bynat/caching/Caching.py` (`CacheManager`), `tests/test_caching.py` |
 
 ## 4. Backlog
 
 Priority: **P1** correctness or data safety, **P2** performance or maintainability, **P3** nice to have. Effort: **S** under a day, **M** a few days, **L** a week or more.
 
-### Milestone 3 (`0.3.0`): cache and enrichment engine
-
-#### `CACHE-01`: SQLite cache backend (P1, M)
-- **Problem:** `save_function_cache` rewrites the entire JSON file at every checkpoint, which costs O(n) per save and O(n²) over a long run. Concurrent writers to one cache still lose each other's updates; atomic replace does not prevent that.
-- **Plan:** a `sqlite3` key-value table per cache directory (`func_name`, `bucket`, `key`, `value_json`, `created_at`). SQLite provides atomic commits and cross-process locking with no new dependency, so there is no hand-rolled lock-directory protocol. Keep `get_column_cache` returning a dict-like object so call sites do not change. Read existing `*_cache.json` files once and import them.
-- **Done when:** a multi-process test writing disjoint keys loses nothing, an interrupted run keeps every committed checkpoint, and existing JSON caches are migrated by a test fixture.
-- **Not doing:** a versioned JSON envelope with `__bynat_type__` tags. Values the methods store are strings, numbers, `None`, and `[lat, lng]` pairs, which JSON already handles.
+### Milestone 3 (`0.4.0`): cache and enrichment engine
 
 #### `ENRICH-01`: one cached-lookup engine with injectable providers (P2, M)
 - **Problem:** `translate_categorical_column`, `translate_conditional_column`, `fill_missing_coordinates`, `convert_to_usd`, and `extract_entities_nlp` each re-implement the same loop: unique values, cache lookup, fetch misses, checkpoint every `save_every`, map back. Providers are hard-coded (`GoogleTranslator`, `Nominatim`, `yfinance`).
@@ -80,7 +77,7 @@ Priority: **P1** correctness or data safety, **P2** performance or maintainabili
 - **Plan:** one private generator of per-level outlier masks, with `groupby(...).quantile([0.25, 0.75])` mapped back through `transform`. The two public methods become thin wrappers.
 - **Done when:** existing outlier tests pass unchanged and a benchmark is recorded.
 
-### Milestone 4 (`0.4.0`): API shape. Each item needs decision D-03 first.
+### Milestone 4 (`0.5.0`): API shape. Each item needs decision D-03 first.
 
 #### `API-01`: pandas accessor (P2, L)
 - **Problem:** subclassing `DataFrame` is fragile. `_constructor` (line 124) builds a new `CacheManager` on every pandas operation (line 154), `_metadata` is dropped by many operations, and pandas recommends accessors for extensions.
@@ -89,6 +86,8 @@ Priority: **P1** correctness or data safety, **P2** performance or maintainabili
 #### `API-02`: retire `inplace` (P2, M)
 - **Problem:** every transformation accepts `inplace`, but the early-exit paths return `self` (an alias) while normal paths return a copy (`return self if not inplace else None`, 15 sites starting at line 312). `split_list_objects(inplace=True, explode_rows=True)` cannot work, as its docstring admits. pandas itself is moving away from `inplace` under Copy-on-Write.
 - **Plan:** always return a new object. Emit a `DeprecationWarning` when `inplace=True` is passed, and remove it in the following minor version.
+
+### Milestone 4 (`0.6.0`): API shape. Each item needs decision D-03 first.
 
 #### `ARCH-01`: split `Cleaning.py` into modules (P2, M)
 - **Plan:** `cleaning/columns.py` (rename, drop, reorder, move), `text.py` (keywords, truncate, categorize), `stats.py` (outliers, `fill_missing`, `get_hierarchical_stats`), `enrich/` (translate, geocode, currency, nlp, engine), and `io.py` (JSON, SQL, loaders). `bynat.cleaning` re-exports the same names, so imports do not change. Rename `Caching.py` and `Cleaning.py` to lowercase module names, with shims.
@@ -110,6 +109,13 @@ Priority: **P1** correctness or data safety, **P2** performance or maintainabili
 - **D-03: return convention without `inplace`.** Open. Recommended: always return a new object (see `API-02`), and stop returning aliases from early exits. This changes behavior for callers who rely on `inplace=True`, so it needs the maintainer's approval.
 - **D-04: concurrency for the cache.** Resolved in favor of `sqlite3` (`CACHE-01`) over a lock-directory protocol or a `portalocker` dependency. It gives locking and atomic commits from the standard library.
 - **D-05: logging defaults.** Resolved in `0.2.0`: no `NullHandler`, so `WARNING`s reach stderr through Python's last-resort handler and keep the visibility users had with `print`, while `INFO` progress stays quiet.
+- **D-06: `CACHE-01` deletion semantics.** A bucket deletion is calculated against the manager's last committed baseline and deletes only those known rows. Rows added concurrently after that baseline are preserved, preventing a stale manager from erasing unrelated concurrent work. Resolved: keep the safer preservation behavior.
+- **D-07: `CACHE-01` write conflicts.** Disjoint row identities merge because saves apply deltas. Concurrent writes to the same `(func_name, bucket, key)` use last committed writer wins. Resolved: do not add version columns, conflict exceptions, or a custom merge policy.
+- **D-08: `CACHE-01` legacy JSON validation.** Invalid JSON and non-object top-level values retain the current quarantine behavior. Unsupported nested bucket shapes are not silently converted or discarded; migration leaves the source available, logs the problem, and does not record a completed migration marker. Resolved: preserve recoverability over partial silent import.
+- **D-09: `CACHE-01` save failures.** `save_function_cache` continues to log and return without raising for serialization, locking, and SQLite errors. Failed transactions leave the baseline snapshot unchanged, so pending changes remain retryable. Resolved: preserve the current public error behavior while making rollback explicit.
+- **D-10: `CACHE-01` transaction and initialization settings.** Database creation is lazy. Each migration, save, and deletion is one explicit `BEGIN IMMEDIATE` transaction. Connections use a finite busy timeout, WAL journaling, and durable synchronous commits. Resolved: rely on SQLite locking and transactions, not a lock-directory protocol.
+- **D-11: `CACHE-01` migration safety.** Migration metadata is checked and re-checked inside the write transaction. Entries use idempotent insert-if-absent behavior, so stale JSON cannot overwrite an existing SQLite row. The migration marker is committed only after every source entry succeeds. Resolved: retries are safe after partial failure and concurrent initialization.
+- **D-12: `CACHE-01` API compatibility.** The cache API continues returning ordinary mutable dictionaries rather than a custom mapping. Existing direct indexing, assignment, membership, `.get`, iteration/equality, and explicit `None` values remain supported. Resolved: use baseline snapshots and delta persistence instead of changing callers.
 
 ## 6. Definition of done
 

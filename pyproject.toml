@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bynat"
-version = "0.2.0"
+version = "0.3.0"
 description = "A collection of reusable Python utilities"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -43,6 +43,9 @@ nlp = [
 sql = [
     "SQLAlchemy",
 ]
+
+[project.urls]
+Changelog = "https://github.com/abdallahabukhalil/bynat/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 include = ["bynat*"]
