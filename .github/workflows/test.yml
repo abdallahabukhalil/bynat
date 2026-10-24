@@ -23,7 +23,24 @@ jobs:
         run: python -m pip install ruff
 
       - name: Lint
-        run: ruff check bynat tests
+        run: ruff check bynat tests benchmarks
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package and type-checking tools
+        run: python -m pip install . mypy pandas-stubs
+
+      - name: Type check
+        run: python -m mypy
 
   test:
     runs-on: ${{ matrix.os }}
