@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
 
 This release moves the cleaning API to a `df.bynat` pandas accessor, splits the implementation into focused modules, routes every external-service method through one cached-lookup engine with injectable providers, and speeds up keyword extraction, outlier detection, and external calls. Review the **Breaking changes** and **Deprecated** sections before upgrading.
 
