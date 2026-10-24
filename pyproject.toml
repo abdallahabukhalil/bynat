@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bynat"
-version = "0.3.0"
-description = "A collection of reusable Python utilities"
+version = "0.6.0"
+description = "A Python toolkit for simplifying data workflows."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -43,6 +43,12 @@ nlp = [
 sql = [
     "SQLAlchemy",
 ]
+dev = [
+    "mypy",
+    "pandas-stubs",
+    "pytest",
+    "ruff",
+]
 
 [project.urls]
 Changelog = "https://github.com/abdallahabukhalil/bynat/blob/main/CHANGELOG.md"
@@ -61,3 +67,42 @@ ignore = ["E501"]
 [tool.ruff.lint.per-file-ignores]
 # Subpackages re-export their module's __all__.
 "__init__.py" = ["F401", "F403"]
+
+[tool.mypy]
+python_version = "3.11"
+# Gradual scope: the cache package and the cleaning helpers. The deprecated
+# `BaseData` subclass wrappers are left out until they are removed.
+files = [
+    "bynat/caching/manager.py",
+    "bynat/cleaning/_common.py",
+    "bynat/cleaning/accessor.py",
+    "bynat/cleaning/columns.py",
+    "bynat/cleaning/enrich",
+    "bynat/cleaning/io.py",
+    "bynat/cleaning/stats.py",
+    "bynat/cleaning/text.py",
+]
+check_untyped_defs = true
+disallow_incomplete_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = false
+
+[[tool.mypy.overrides]]
+module = ["bynat.cleaning.base", "bynat.caching.Caching", "bynat.cleaning.Cleaning"]
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = [
+    "ahocorasick",
+    "babel.*",
+    "deep_translator",
+    "geopy.*",
+    "langdetect",
+    "pycountry",
+    "spacy.*",
+    "sqlalchemy",
+    "yfinance",
+]
+ignore_missing_imports = true

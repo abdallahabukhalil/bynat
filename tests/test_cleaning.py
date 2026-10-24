@@ -13,10 +13,10 @@ def test_public_cleaning_imports_use_the_bundled_cache_manager(tmp_path):
     frame = BaseData({"value": [1]}, cache_dir=tmp_path)
 
     assert isinstance(frame.cache_manager, CacheManager)
-    assert BaseData.__module__ == "bynat.cleaning.Cleaning"
-    assert {"BaseData", "JsonFile", "CsvFile"}.issubset(
-        set(__import__("bynat.cleaning.Cleaning", fromlist=["__all__"]).__all__)
-    )
+    assert BaseData.__module__ == "bynat.cleaning.base"
+    legacy = __import__("bynat.cleaning.Cleaning", fromlist=["__all__"])
+    assert legacy.BaseData is BaseData
+    assert {"BaseData", "JsonFile", "CsvFile"}.issubset(set(legacy.__all__))
 
 
 def test_basedata_core_column_transformations_preserve_subclass_and_cache(tmp_path):
@@ -120,7 +120,8 @@ def test_impute_by_language_missing_reference_returns_before_optional_import(mon
     frame = BaseData({"category": ["pending"]}, cache_dir=tmp_path)
 
     result = frame.impute_by_language("missing")
-    assert result is frame
+    assert result is not frame
+    assert result.equals(frame)
     assert frame.impute_by_language("missing", inplace=True) is None
 
 
@@ -258,7 +259,7 @@ def test_hierarchy_methods_support_named_multi_and_duplicate_indexes(tmp_path, i
 
 
 def test_save_to_json_append_deduplicates_plain_columns_without_json_keys(tmp_path, monkeypatch):
-    import bynat.cleaning.Cleaning as cleaning
+    import bynat.cleaning.io as cleaning
 
     file_path = tmp_path / "out.json"
     BaseData({"a": [1, 2], "b": ["x", "y"]}, cache_dir=tmp_path).save_to_json(file_path)

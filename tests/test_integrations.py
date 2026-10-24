@@ -183,10 +183,14 @@ def _install_currency(monkeypatch, history_by_ticker_year, fetches):
             self.symbol = symbol
 
         def history(self, start, end):
-            year = int(start[:4])
-            fetches.append((self.symbol, year))
-            closes = history_by_ticker_year.get((self.symbol, year), [])
-            return pd.DataFrame({"Close": closes})
+            start_year, end_year = int(start[:4]), int(end[:4])
+            fetches.append((self.symbol, start_year, end_year))
+            dates, closes = [], []
+            for year in range(start_year, end_year + 1):
+                for day, close in enumerate(history_by_ticker_year.get((self.symbol, year), []), start=1):
+                    dates.append(pd.Timestamp(year=year, month=1, day=day))
+                    closes.append(close)
+            return pd.DataFrame({"Close": closes}, index=pd.DatetimeIndex(dates))
 
     _install(monkeypatch, "pycountry", countries=types.SimpleNamespace(search_fuzzy=search_fuzzy))
     _install(monkeypatch, "babel")
@@ -218,7 +222,8 @@ def test_convert_to_usd_looks_back_and_caches_missing_years(monkeypatch, tmp_pat
     assert result["salary_usd"].tolist()[:2] == [10.0, 100.0]
     assert pd.isna(result.loc["c", "salary_usd"])
     assert result.loc["d", "salary_usd"] == 2.0
-    assert fetches == [("EGP=X", 2020), ("EGP=X", 2019)]
+    # One download covers every year the lookback may need.
+    assert fetches == [("EGP=X", 2019, 2020)]
 
     with sqlite3.connect(frame.cache_manager._get_database_path()) as connection:
         currency_codes = {
