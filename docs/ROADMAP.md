@@ -7,7 +7,7 @@ This roadmap is written against the code as it is, not as it might be. Every ite
 `bynat` is a small utility library. The cleaning code lives in focused modules under `bynat/cleaning/` and the cache in `bynat/caching/manager.py`.
 
 - **Cleaning functions** in `columns`, `text`, `stats`, `enrich` (`translate`, `geocode`, `currency`, `nlp`, `engine`, `providers`), and `io` take a DataFrame first and return a new one: column helpers, text extraction, hierarchical outlier handling, imputation and statistics, external-service enrichment (translation, geocoding, currency, spaCy), and JSON/SQL export and loading.
-- **`df.bynat`** (`bynat.cleaning.accessor`) exposes them on any DataFrame. **`BaseData`**, `JsonFile`, and `CsvFile` (`bynat.cleaning.base`) are deprecated `pandas.DataFrame` subclass wrappers over the same functions. `bynat.cleaning.Cleaning` and `bynat.caching.Caching` are compatibility aliases.
+- **`BaseData`**, `JsonFile`, and `CsvFile` (`bynat.cleaning.base`) are supported public class-based APIs. `BaseData` remains a supported `pandas.DataFrame` subclass over the shared functions. **`df.bynat`** (`bynat.cleaning.accessor`) is an optional complementary interface for ordinary DataFrames, not a replacement or required access path. `bynat.cleaning.Cleaning` and `bynat.caching.Caching` are compatibility aliases.
 - **`bynat.caching.CacheManager`** keeps one SQLite database per cache directory (`cache.sqlite3`) holding nested dictionaries keyed by column, importing legacy `<func_name>_cache.json` files on first read. Its public methods are `load_function_cache`, `get_column_cache`, `save_function_cache`, and `delete_column_cache`. There is no `get`, `set`, `clear`, or TTL API.
 
 ## 2. Principles
@@ -23,7 +23,7 @@ This roadmap is written against the code as it is, not as it might be. Every ite
 - **Python:** `>=3.11`. CI runs Ubuntu and Windows on 3.11 and 3.13, a Ruff lint job, and an extras job (`.[categorization,sql]`).
 - **Tests:** 289 full-suite tests pass on pandas 3 (pandas 2 skips the comparisons against the `0.3.0` outlier merge, which mishandles null keys there). Six are skipped unless the `categorization` and `sql` extras are installed. Equivalence tests for the optimized methods live in `tests/test_equivalence.py`.
 - **Lint:** `ruff check bynat tests benchmarks` is clean with `E`, `F`, `W`, `I`, `UP` (`E501` ignored; see `pyproject.toml`).
-- **Types:** `python -m mypy` is clean for the scope in `[tool.mypy]`: the cache manager and the cleaning helpers. The deprecated `bynat/cleaning/base.py` is excluded.
+- **Types:** `python -m mypy` is clean for the scope in `[tool.mypy]`: the cache manager and the cleaning helpers. The supported class wrappers in `bynat/cleaning/base.py` may remain outside the initial scope while the remaining helper modules are brought into coverage incrementally; this is not a removal plan.
 - **Row-wise iteration audit:** no `apply(axis=1)`, `iterrows`, or `itertuples` in `bynat/`. Unique-value loops exist in the enrichment methods by design (Principle 1).
 
 ### Done
@@ -53,10 +53,17 @@ This roadmap is written against the code as it is, not as it might be. Every ite
 | 0.6.0 | `PERF-02` `extract_keywords` on unique texts with one combined pattern (Aho-Corasick for ASCII text when installed) | `bynat/cleaning/text.py`, `tests/test_equivalence.py`, `benchmarks/bench_extract_keywords.py` |
 | 0.6.0 | `PERF-03` `translate_conditional_column` partitions through one `groupby`, reproducible `random_state` | `enrich/translate.py` |
 | 0.6.0 | `PERF-04` one generator of per-level outlier masks, one grouped `quantile([0.25, 0.75])` per level, no merge | `bynat/cleaning/stats.py`, `tests/test_equivalence.py`, `benchmarks/bench_outliers.py` |
-| 0.6.0 | `API-01` `df.bynat` accessor, `bynat.read_json` / `bynat.read_csv`, deprecated `BaseData` / `JsonFile` / `CsvFile` wrappers, lazily created and shared `CacheManager` | `bynat/cleaning/accessor.py`, `bynat/cleaning/base.py`, `tests/test_accessor.py` |
-| 0.6.0 | `API-02` transformations always return new objects; `inplace=True` warns (D-03) | `bynat/cleaning/base.py`, `tests/test_inplace_deprecation.py` |
+| 0.6.0 | `API-01` optional `df.bynat` accessor and `bynat.read_json` / `bynat.read_csv`, alongside the supported `BaseData` / `JsonFile` / `CsvFile` class API and lazily created/shared `CacheManager` | `bynat/cleaning/accessor.py`, `bynat/cleaning/base.py`, `tests/test_accessor.py` |
+| 0.6.0 | `API-02` transformations return new objects by default; where meaningful, `inplace=True` mutates the original object and returns `None` (or the documented statistics result) | `bynat/cleaning/base.py`, `tests/test_inplace_deprecation.py` |
 | 0.6.0 | `ARCH-01` `Cleaning.py` split into modules, `Caching.py` renamed to `manager.py`, legacy module paths kept as aliases | `bynat/cleaning/`, `bynat/caching/` |
-| 0.6.0 | `QA-01` mypy for the cache manager and the cleaning helpers, CI job | `pyproject.toml`, `.github/workflows/test.yml` |
+| 0.6.0 | `QA-01` mypy for the cache manager and the cleaning helpers, CI job; supported class wrappers remain a separate gradual-typing boundary | `pyproject.toml`, `.github/workflows/test.yml` |
+
+### Revised `API-01` public API direction
+
+- **Problem:** the class-based API is the supported public interface and must remain usable through `BaseData(data)`, `JsonFile`, and `CsvFile`. The accessor is useful for ordinary DataFrames, but replacing the classes would break an intentional usage pattern and is not the project's direction.
+- **Plan:** retain `BaseData` as a supported `pandas.DataFrame` subclass and retain `JsonFile`, `CsvFile`, and `bynat/cleaning/base.py`. Keep shared module-level implementations so the classes and the optional `df.bynat` accessor do not drift. Reassess `_constructor`, `CacheManager` initialization, and `_metadata` within the class-based design rather than treating class removal as the solution. Keep the accessor complementary and never require it for cleaning methods.
+- **Dependencies:** `API-02` governs transformation return and `inplace` behavior independently of whether callers use classes or the optional accessor. `DEPR-02` must not delete the class API or `bynat/cleaning/base.py`; mypy expansion should target remaining helper modules without making class removal a prerequisite.
+- **Acceptance criteria:** `BaseData(data)`, `JsonFile`, and `CsvFile` remain supported and documented; class-based cleaning methods remain usable; `df.bynat` remains optional and complementary; both interfaces share implementations and cache behavior; tests cover the supported classes and the optional accessor; no migration plan requires users to move to the accessor.
 
 ## 4. Backlog
 
@@ -64,25 +71,59 @@ Priority: **P1** correctness or data safety, **P2** performance or maintainabili
 
 ### Next minor release
 
-#### `DEPR-02`: remove the deprecated API (P2, S)
-- Remove `inplace` from every transformation and delete `BaseData`, `JsonFile`, and `CsvFile` with `bynat/cleaning/base.py`, after one minor release of `DeprecationWarning`s (D-03, `API-01`, `API-02`).
-- Then add the remaining helper modules to the mypy scope; the cleaning functions are already checked.
-- Keep the `bynat.cleaning.Cleaning` and `bynat.caching.Caching` aliases (pointing at the new modules) for at least one more minor release, since they cost nothing.
+**### Milestone 7 (`0.7.0`): analytics integration**
+
+**#### `ANALYTICS-01`: integrate the analytics library (P1, M)**
+- **Problem:** the existing analytics library is separate from `bynat`, so its functionality is not yet available through the package's public API.
+- **Plan:** integrate the existing library under `bynat.analytics`, preserving its current behavior and defining clear public API and output contracts. Keep analytics logic independent of application-specific integrations such as Power BI.
+- **Done when:** the analytics functionality is accessible through the documented package API, existing behavior is preserved, and tests cover public interfaces and output contracts.
+
+### Milestone 8 (`0.8.0`): data quality
+
+#### `DQ-01`: DataFrame quality profiling (P1, M)
+- **Problem:** users need a structured way to assess data quality before cleaning or analysis without manually combining checks for missing values, duplicates, column types, and descriptive statistics.
+- **Plan:** add a profiling API that produces a structured report covering missing values, duplicate rows, column types, and relevant descriptive statistics. Keep profiling non-mutating and make its output suitable for programmatic use.
+- **Done when:** the report has a documented, stable structure, covers supported data types and edge cases, and tests verify its results without modifying the input.
+
+#### `DQ-02`: declarative DataFrame quality checks (P1, M)
+- **Problem:** users need to define and evaluate data quality requirements consistently instead of implementing ad hoc validation logic for every dataset.
+- **Plan:** add declarative checks for required columns, missing-value policies, uniqueness, numeric ranges, and allowed values. Return structured validation results identifying failed checks and relevant violations. Keep validation separate from automatic cleaning.
+- **Done when:** supported rules can be declared and evaluated through a documented API, results identify failures clearly, and tests cover valid data, invalid data, and edge cases without modifying the input.
+
+### Milestone 9 (`0.9.0`): API maintenance
+
+#### `DEPR-02`: standardize transformation behavior and maintenance boundaries (P2, S)
+- **Problem:** transformation methods still need one consistent `inplace` convention, while the supported class-based API and its implementation module must remain part of the public surface.
+- **Plan:** standardize `inplace` behavior according to `API-02`, without deleting `BaseData`, `JsonFile`, `CsvFile`, or `bynat/cleaning/base.py`. Add the remaining helper modules to the mypy scope; the class wrappers may remain a separate gradual-typing boundary. Keep the `bynat.cleaning.Cleaning` and `bynat.caching.Caching` aliases for at least one additional minor release.
+- **Done when:** the `inplace` mutation and return behavior is documented and tested consistently, the supported class API and imports continue to work, the remaining helper modules are covered by mypy, the aliases remain available for the stated period, and the full test suite and mypy checks pass.
+
+#### `DEPR-01`: deprecate the misspelled NLP parameter (P3, S)
+- **Problem:** `extract_entities_nlp(noisey_terms=...)` preserves a misspelled parameter alias that should no longer be part of the long-term API.
+- **Plan:** emit a `DeprecationWarning` when `noisey_terms` is used, directing users to `noisy_terms`.
+- **Done when:** the deprecated alias emits the expected warning, `noisy_terms` works normally, and tests cover both paths.
 
 #### `PERF-05`: rates through the engine (P3, S)
-- `convert_to_usd` resolves currency codes through `_cached_map`, but its year-range rate download stays a dedicated loop because one fetch fills many `CODE_YEAR` keys. Revisit if the engine gains a multi-key store.
+- **Problem:** `convert_to_usd` resolves currency codes through `_cached_map`, but year-range rate downloads remain a dedicated loop because each fetch populates multiple `CODE_YEAR` keys.
+- **Plan:** revisit integration if the engine gains a multi-key store. Keep the existing dedicated download loop until that abstraction provides a clear benefit.
+- **Done when:** the existing implementation remains documented as intentional or a multi-key engine integration is implemented with equivalent results and tests.
 
-### Later or optional
+### Milestone 10 (`1.0.0`): I/O and compatibility
 
-- `DEPR-01` (P3, S): deprecate the misspelled `extract_entities_nlp(noisey_terms=...)` alias with a warning.
-- `IO-01` (P3, M): an append-friendly output (JSON Lines or SQLite) so `save_to_json(append=True)` does not re-read and rewrite the whole file (`bynat/cleaning/io.py`).
-- `COMPAT-01` (P3, S): Python 3.10. Low value. It needs `typing.Self` from `typing_extensions` and a CI run before any `requires-python` change.
+#### `IO-01`: append-friendly output (P3, M)
+- **Problem:** `save_to_json(append=True)` re-reads and rewrites the entire file, making repeated appends increasingly expensive (`bynat/cleaning/io.py`).
+- **Plan:** add an append-friendly output option, such as JSON Lines or SQLite, that avoids rewriting the complete dataset on each append while preserving the existing JSON behavior.
+- **Done when:** repeated appends do not require rewriting the entire accumulated dataset, output can be read back correctly, and tests cover appends, existing files, and failure cases.
+
+#### `COMPAT-01`: Python 3.10 support (P3, S)
+- **Problem:** the package currently requires Python 3.11 or newer, limiting use in Python 3.10 environments.
+- **Plan:** evaluate compatibility using `typing.Self` from `typing_extensions` and a dedicated Python 3.10 CI run before changing `requires-python`.
+- **Done when:** the test suite passes on Python 3.10, compatibility requirements are satisfied, and package metadata is updated only if support is confirmed.
 
 ## 5. Decisions
 
 - **D-01: `group_key` is always a tuple.** One value per hierarchy column, including single-column levels (`("EG",)`), as pinned by `tests/test_hierarchical_stats.py`. Resolved: keep it.
 - **D-02: `mean` and `median` on non-numeric targets raise pandas' `TypeError`.** Resolved: keep failing fast.
-- **D-03: return convention without `inplace`.** Resolved: always return a new object, including from early exits. `inplace=True` keeps working with a `DeprecationWarning` for one minor release (`API-02`), then is removed (`DEPR-02`).
+- **D-03: return convention with supported `inplace`.** Resolved: class-based callers remain supported, and transformations return a new object by default, including from early exits. Where an operation supports in-place behavior, `inplace=True` mutates the original object and returns `None`; methods that produce an additional documented result return that result instead. `inplace` is not scheduled for deprecation or removal.
 - **D-04: concurrency for the cache.** Resolved in favor of `sqlite3` (`CACHE-01`) over a lock-directory protocol or a `portalocker` dependency. It gives locking and atomic commits from the standard library.
 - **D-05: logging defaults.** Resolved in `0.2.0`: no `NullHandler`, so `WARNING`s reach stderr through Python's last-resort handler and keep the visibility users had with `print`, while `INFO` progress stays quiet.
 - **D-06: `CACHE-01` deletion semantics.** A bucket deletion is calculated against the manager's last committed baseline and deletes only those known rows. Rows added concurrently after that baseline are preserved, preventing a stale manager from erasing unrelated concurrent work. Resolved: keep the safer preservation behavior.

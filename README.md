@@ -1,6 +1,6 @@
 # bynat
 
-`bynat` is a Python utility package for tabular-data cleaning and small SQLite-backed caches. Its cleaning API is a `df.bynat` accessor on ordinary `pandas.DataFrame` objects; the caching API stores per-function dictionaries in a SQLite database.
+`bynat` is a Python utility package for tabular-data cleaning and small SQLite-backed caches. Its first-class cleaning API is class-based through `BaseData`, `JsonFile`, and `CsvFile`; the optional `df.bynat` accessor provides a complementary interface for ordinary `pandas.DataFrame` objects. The caching API stores per-function dictionaries in a SQLite database.
 
 ## Status
 
@@ -47,12 +47,13 @@ These integrations are imported only when their methods are used. Basic imports 
 import bynat                          # registers the df.bynat accessor
 from bynat import read_csv, read_json
 from bynat.caching import CacheManager, shared_cache_manager
+from bynat.cleaning import BaseData, CsvFile, JsonFile
 from bynat.cleaning.enrich import Geocoder, RateSource, Translator
 ```
 
 - `bynat`: `read_json`, `read_csv`, `BynatAccessor`. Importing `bynat` (or any submodule) registers the `bynat` accessor on `pandas.DataFrame`.
 - `bynat.caching`: `CacheManager`, `shared_cache_manager`, `CACHE_DIR_ENV_VAR`, `DEFAULT_CACHE_DIR`
-- `bynat.cleaning`: `BynatAccessor`, `read_json`, `read_csv`, and the deprecated `BaseData`, `JsonFile`, `CsvFile`
+- `bynat.cleaning`: `BynatAccessor`, `read_json`, `read_csv`, and the supported `BaseData`, `JsonFile`, `CsvFile` classes
 - `bynat.cleaning.enrich`: the provider protocols `Translator`, `Geocoder`, `RateSource` and their defaults `GoogleTranslatorProvider`, `NominatimGeocoder`, `YFinanceRateSource`
 
 ### Module layout
@@ -66,9 +67,9 @@ from bynat.cleaning.enrich import Geocoder, RateSource, Translator
 | `bynat.cleaning.enrich` | `translate`, `geocode`, `currency`, `nlp`, the shared cached-lookup `engine`, and `providers` |
 | `bynat.cleaning.io` | `save_to_json`, `save_to_sql`, `read_json`, `read_csv` |
 | `bynat.cleaning.accessor` | The `df.bynat` accessor |
-| `bynat.cleaning.base` | The deprecated `BaseData`, `JsonFile`, `CsvFile` wrappers |
+| `bynat.cleaning.base` | The supported `BaseData`, `JsonFile`, `CsvFile` classes |
 
-Each function in `columns`, `text`, `stats`, `enrich`, and `io` takes the DataFrame as its first argument and returns a new one; the accessor and the deprecated classes are thin layers over them. The legacy module paths `bynat.caching.Caching` and `bynat.cleaning.Cleaning` still import and resolve to `bynat.caching.manager` and `bynat.cleaning.base`.
+Each function in `columns`, `text`, `stats`, `enrich`, and `io` takes the DataFrame as its first argument and returns a new one by default; the supported classes and optional accessor are thin layers over them. The legacy module paths `bynat.caching.Caching` and `bynat.cleaning.Cleaning` still import and resolve to `bynat.caching.manager` and `bynat.cleaning.base`.
 
 ## Caching
 
@@ -105,7 +106,7 @@ Cache keys must be non-empty strings and cannot contain path separators. Values 
 
 ## Cleaning
 
-After `import bynat`, every `pandas.DataFrame` has a `bynat` accessor. Each method returns a new DataFrame and never modifies the original, including when there is nothing to change. Methods that perform translation, geocoding, NLP extraction, or exchange-rate lookup use one shared `CacheManager` per cache directory: the `BYNAT_CACHE_DIR` directory or the default, unless `df.bynat.with_cache(...)` selects another directory or an explicit `CacheManager`.
+The class-based API remains first-class: instantiate `BaseData(data)`, `JsonFile`, or `CsvFile` and call the cleaning methods directly. After `import bynat`, every `pandas.DataFrame` also has the optional `bynat` accessor for the same cleaning operations. Accessor methods return new DataFrames and do not accept `inplace`; class methods return a new object by default, while supported `inplace=True` calls mutate the original object and return `None` (or the documented statistics result). Methods that perform translation, geocoding, NLP extraction, or exchange-rate lookup use one shared `CacheManager` per cache directory: the `BYNAT_CACHE_DIR` directory or the default, unless `df.bynat.with_cache(...)` selects another directory or an explicit `CacheManager`.
 
 ### Practical examples
 
@@ -213,37 +214,37 @@ Translators with `translate_batch` receive the values in chunks of `save_every`.
 
 All four cached methods, and `extract_entities_nlp`, run through one engine: unique non-null values are looked up in the cache, the misses are fetched, the cache is checkpointed every `save_every` values, and failures are logged and left uncached so the next run retries them.
 
-### Deprecated classes
+### Class-based API
 
-`BaseData`, `JsonFile`, and `CsvFile` still work for one more minor version and emit a `DeprecationWarning` when constructed directly. They are thin wrappers over the same functions as the accessor.
+`BaseData`, `JsonFile`, and `CsvFile` are supported public classes. `BaseData` is a supported `pandas.DataFrame` subclass, and all three use the same cleaning implementations as the optional accessor.
 
-| Class | Constructor parameters | Replacement |
+| Class | Constructor parameters | Equivalent accessor / function form |
 | --- | --- | --- |
-| `BaseData` | `data=None`, `cache_dir=None`, `*args`, `**kwargs` | `pandas.DataFrame(...)` with `df.bynat`; `df.bynat.with_cache(cache_dir)` for a cache directory |
-| `JsonFile` | `data=None`, `json_file_path=None`, `key=None`, `cache_dir=None`, `*args`, `**kwargs` | `bynat.read_json(json_file_path, key=None)` |
-| `CsvFile` | `data=None`, `csv_file_path=None`, `cache_dir=None`, `read_kwargs=None`, `*args`, `**kwargs` | `bynat.read_csv(csv_file_path, **read_kwargs)` |
+| `BaseData` | `data=None`, `cache_dir=None`, `*args`, `**kwargs` | `pandas.DataFrame(...)` with optional `df.bynat`; `df.bynat.with_cache(cache_dir)` for a cache directory |
+| `JsonFile` | `data=None`, `json_file_path=None`, `key=None`, `cache_dir=None`, `*args`, `**kwargs` | `bynat.read_json(json_file_path, key=None)` followed by optional `df.bynat` methods |
+| `CsvFile` | `data=None`, `csv_file_path=None`, `cache_dir=None`, `read_kwargs=None`, `*args`, `**kwargs` | `bynat.read_csv(csv_file_path, **read_kwargs)` followed by optional `df.bynat` methods |
 
-Migration:
+Equivalent class-based and accessor styles:
 
 ```python
-# Before
+# Class-based style
 from bynat.cleaning import JsonFile
 jobs = JsonFile(json_file_path="jobs.json", key="items", cache_dir="cache")
 jobs = jobs.rename_all_DOTS()
 jobs.translate_categorical_column("status", inplace=True)
 
-# After
+# Optional accessor style
 import bynat
 jobs = bynat.read_json("jobs.json", key="items")
 jobs = jobs.bynat.rename_all_DOTS()
 jobs = jobs.bynat.with_cache("cache").translate_categorical_column("status")
 ```
 
-Every `BaseData` method below also accepts `inplace=False`. **`inplace=True` is deprecated**: it still modifies the object and returns `None` (or the statistics, see below), but emits a `DeprecationWarning` and will be removed in the next minor release. Without it, every method returns a new object, including early exits that previously returned the original object itself. `BaseData` creates its `CacheManager` on first use and shares it with every frame pandas derives from it.
+Every supported `BaseData` method below also accepts `inplace=False` where in-place operation is meaningful. With `inplace=True`, the method mutates the original object and returns `None` (or the documented statistics result); it is supported and is not scheduled for removal. Without it, every method returns a new object, including early exits that previously returned the original object itself. `BaseData` creates its `CacheManager` on first use and shares it with every frame pandas derives from it.
 
 ### Methods and parameters
 
-The accessor and the deprecated classes expose the same methods. Accessor methods take no `inplace` argument.
+The optional accessor and the supported classes expose the same cleaning methods. Accessor methods take no `inplace` argument; class methods accept it where in-place operation is meaningful. The statistics-only `get_hierarchical_stats` method returns statistics and does not expose an in-place mode.
 
 | Method | Parameters | Purpose and important behavior |
 | --- | --- | --- |
@@ -271,13 +272,13 @@ The accessor and the deprecated classes expose the same methods. Accessor method
 | `fill_missing` | `*target_cols`, `strategy="median"`, `hierarchy_cols=None`, `get_hierarchical_stats=False` | Fill missing values progressively through a grouping hierarchy using `median`, `mean`, `mode`, or the accepted alias `mod`. When enabled, return `(result, stats)` with statistics for the requested strategy computed before imputation. |
 | `get_hierarchical_stats` | `*target_cols`, `strategy="median"`, `hierarchy_cols=None`, `output_type=None` | Return one statistic row per group, hierarchy level, target, and strategy. See the example above for the output schema and `output_type` values. |
 | `categorize_by_reference` | `*source_cols`, keyword-only `target_col`, `reference`, `default_category="Other"` | Search combined text with an Aho-Corasick automaton and assign the longest matching reference keyword's category. |
-| `extract_entities_nlp` | `*source_cols`, keyword-only `lexicon_source`, `spacy_model="en_core_web_sm"`, `exclude_pos=None`, `disable=("parser", "ner")`, `save_every=1000`, `noisy_terms=None`, `**target_cols_and_json_keys` | Load lexicon data from JSON or a dictionary, process text with spaCy, cache entity lists per target/model/pipeline configuration, and write them to target columns. `disable` accepts None, one component name, or an iterable; required lemmatization components are rejected and unknown names warn. |
+| `extract_entities_nlp` | `*source_cols`, keyword-only `lexicon_source`, `spacy_model="en_core_web_sm"`, `exclude_pos=None`, `disable=("parser", "ner")`, `save_every=1000`, `noisy_terms=None`, `**target_cols_and_json_keys` | Load lexicon data from JSON or a dictionary, process text with spaCy, cache entity lists per target/model/pipeline configuration, and write them to target columns. `disable` accepts None, one component name, or an iterable; required lemmatization components are rejected and unknown names warn. The misspelled `noisey_terms` name remains a separate deprecated compatibility alias. |
 | `save_to_json` | `file_path`, `orient="records"`, `append=False`, `force_ascii=False`, `indent=4` | Write JSON only when changed, or append/deduplicate existing JSON rows. Rows with list or dictionary values are deduplicated by their JSON content. Datetime columns are formatted as `%Y-%m-%d %H:%M:%S`. |
 | `save_to_sql` | `table_name`, `database_type`, `database_user`, `database_password`, `database_host`, `database_port`, `database_name`, `database_driver=None`, `columns_types=None`, `chunk_size=None`, `fast_executemany=False`, `if_exists="append"`, `index=False` | Build a SQLAlchemy connection URL and write the frame with `DataFrame.to_sql`. SQLite uses `database_name` as a path; SQL Server requires `database_driver`. |
 
 Most methods skip missing source/target columns with a logged warning and return an unchanged copy. Always use the method's return value. Invalid arguments that would otherwise produce silently wrong results raise instead: an unknown `strategy`, an empty `file_path`, invalid `save_to_sql` connection settings, or an unusable `extract_entities_nlp` configuration.
 
-For `handle_outliers`, `drop_outliers`, and `fill_missing`, passing `get_hierarchical_stats=True` reuses `get_hierarchical_stats()` and computes the statistics from the original data before the cleaning operation changes values or rows. The return value is `(result, stats)`; with the deprecated `inplace=True`, the operation mutates the original object and returns `stats` directly. The outlier methods use the default hierarchical `median` statistic; `fill_missing` uses its requested `strategy`.
+For `handle_outliers`, `drop_outliers`, and `fill_missing`, passing `get_hierarchical_stats=True` reuses `get_hierarchical_stats()` and computes the statistics from the original data before the cleaning operation changes values or rows. The return value is `(result, stats)`; with `inplace=True`, the operation mutates the original object and returns `stats` directly. The outlier methods use the default hierarchical `median` statistic; `fill_missing` uses its requested `strategy`.
 
 ## Limitations and operational notes
 
@@ -294,7 +295,7 @@ For `handle_outliers`, `drop_outliers`, and `fill_missing`, passing `get_hierarc
   logging.basicConfig(level=logging.INFO)              # show progress
   logging.getLogger("bynat").setLevel(logging.ERROR)   # or hide warnings
   ```
-- The top-level `bynat` namespace exposes only `read_json`, `read_csv`, and `BynatAccessor`; `from bynat import BaseData` is not supported.
+- The top-level `bynat` namespace exposes only `read_json`, `read_csv`, and `BynatAccessor`; import the supported class API from `bynat.cleaning` (for example, `from bynat.cleaning import BaseData`).
 
 ## Development and verification
 
@@ -310,7 +311,7 @@ python -m mypy
 
 Install `".[categorization,sql]"` to also run the tests that use the real `pyahocorasick` and SQLAlchemy/SQLite; they are skipped otherwise. CI runs the suite on Ubuntu and Windows with Python 3.11 and 3.13, plus Ruff, mypy, and an extras job.
 
-Type checking is gradual. `python -m mypy` reads its scope from `[tool.mypy]` in `pyproject.toml`: the cache manager and the cleaning helper modules (`_common`, `accessor`, `columns`, `text`, `stats`, `io`, `enrich`), checked against `pandas-stubs`. The deprecated `BaseData` wrappers in `bynat/cleaning/base.py` are excluded. To bring a module into scope, add it to `files`, fix what mypy reports with precise annotations rather than `Any` or `# type: ignore`, and keep the runtime behavior unchanged.
+Type checking is gradual. `python -m mypy` reads its scope from `[tool.mypy]` in `pyproject.toml`: the cache manager and the cleaning helper modules (`_common`, `accessor`, `columns`, `text`, `stats`, `io`, `enrich`), checked against `pandas-stubs`. The supported `BaseData` classes in `bynat/cleaning/base.py` remain a separate gradual-typing boundary. To bring a module into scope, add it to `files`, fix what mypy reports with precise annotations rather than `Any` or `# type: ignore`, and keep the runtime behavior unchanged.
 
 `benchmarks/` holds timing scripts that compare the current implementations with the `0.3.0` algorithms; see `benchmarks/README.md`.
 
