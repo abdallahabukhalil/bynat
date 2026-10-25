@@ -6,14 +6,14 @@ This release moves the cleaning API to a `df.bynat` pandas accessor, splits the 
 
 ### Breaking changes
 
-- **Methods no longer return the original object.** Early exits (for example a missing column, or nothing to rename) used to return `self`, an alias of the input, while normal paths returned a copy. Every transformation now returns a new object. Code that relied on `result is frame` must use the returned object instead.
+- **Methods no longer return the original object.** Early exits (for example a missing column, or nothing to rename) used to return `self`, an alias of the input, while normal paths returned a copy. Every transformation now returns a new object by default. Code that relied on `result is frame` must use the returned object instead. Methods called with `inplace=True` retain their in-place behavior.
 - **`BaseData.__module__` is `bynat.cleaning.base`.** `bynat.cleaning.Cleaning` and `bynat.caching.Caching` still import and resolve to the new modules, so existing imports and pickles keep working.
 - **`convert_to_usd` downloads each currency once.** A custom or fake `yfinance` must return history with a `DatetimeIndex`; yearly means are computed from one download covering every year the look-back may need, instead of one download per year. Per-item failures in the currency-code lookup are now logged and left uncached instead of propagating.
 
 ### Deprecated
 
-- `inplace=True` on every `BaseData` transformation emits a `DeprecationWarning`. It still modifies the object and returns `None` (or the statistics for `get_hierarchical_stats=True`), and will be removed in the next minor release.
-- `BaseData`, `JsonFile`, and `CsvFile` emit a `DeprecationWarning` when constructed directly, and will be removed in the next minor release. Use plain DataFrames with the `df.bynat` accessor, `bynat.read_json`, and `bynat.read_csv`.
+- No deprecations are introduced for `inplace`, `BaseData`, `JsonFile`, or `CsvFile`. These APIs remain supported, and `df.bynat` remains an optional, complementary interface.
+- The misspelled `noisey_terms` parameter is not supported. Use `noisy_terms` instead.
 
 ### Added
 
