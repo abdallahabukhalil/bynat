@@ -58,16 +58,25 @@ This roadmap is written against the code as it is, not as it might be. Every ite
 | 0.6.0 | `ARCH-01` `Cleaning.py` split into modules, `Caching.py` renamed to `manager.py`, legacy module paths kept as aliases | `bynat/cleaning/`, `bynat/caching/` |
 | 0.6.0 | `QA-01` mypy for the cache manager and the cleaning helpers, CI job; supported class wrappers remain a separate gradual-typing boundary | `pyproject.toml`, `.github/workflows/test.yml` |
 
-### Revised `API-01` public API direction
+### Public API policy
 
-- **Problem:** the class-based API is the supported public interface and must remain usable through `BaseData(data)`, `JsonFile`, and `CsvFile`. The accessor is useful for ordinary DataFrames, but replacing the classes would break an intentional usage pattern and is not the project's direction.
-- **Plan:** retain `BaseData` as a supported `pandas.DataFrame` subclass and retain `JsonFile`, `CsvFile`, and `bynat/cleaning/base.py`. Keep shared module-level implementations so the classes and the optional `df.bynat` accessor do not drift. Reassess `_constructor`, `CacheManager` initialization, and `_metadata` within the class-based design rather than treating class removal as the solution. Keep the accessor complementary and never require it for cleaning methods.
-- **Dependencies:** `API-02` governs transformation return and `inplace` behavior independently of whether callers use classes or the optional accessor. `DEPR-02` must not delete the class API or `bynat/cleaning/base.py`; mypy expansion should target remaining helper modules without making class removal a prerequisite.
-- **Acceptance criteria:** `BaseData(data)`, `JsonFile`, and `CsvFile` remain supported and documented; class-based cleaning methods remain usable; `df.bynat` remains optional and complementary; both interfaces share implementations and cache behavior; tests cover the supported classes and the optional accessor; no migration plan requires users to move to the accessor.
+- `BaseData(data)`, `JsonFile`, and `CsvFile` remain supported public APIs.
+- `df.bynat` is an optional, complementary interface, not a replacement for the class-based API.
+- `inplace` remains supported wherever meaningful; its behavior and return contract must be consistent and documented.
+- Shared implementations should prevent the class-based API and accessor from drifting apart.
+- Roadmap tasks must preserve these decisions unless a decision is explicitly revisited and approved.
 
 ## 4. Backlog
 
-Priority: **P1** correctness or data safety, **P2** performance or maintainability, **P3** nice to have. Effort: **S** under a day, **M** a few days, **L** a week or more.
+**Priority:**
+- **P1** correctness or data safety
+- **P2** performance or maintainability
+- **P3** nice to have
+
+**Effort:**
+- **S** under a day
+- **M** a few days
+- **L** a week or more.
 
 ### Next minor release
 
