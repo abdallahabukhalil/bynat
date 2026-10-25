@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.6.0
+
+This release moves the cleaning API to a `df.bynat` pandas accessor, splits the implementation into focused modules, routes every external-service method through one cached-lookup engine with injectable providers, and speeds up keyword extraction, outlier detection, and external calls. Review the **Breaking changes** and **Deprecated** sections before upgrading.
+
+### Breaking changes
+
+- **Methods no longer return the original object.** Early exits (for example a missing column, or nothing to rename) used to return `self`, an alias of the input, while normal paths returned a copy. Every transformation now returns a new object by default. Code that relied on `result is frame` must use the returned object instead. Methods called with `inplace=True` retain their in-place behavior.
+- **`BaseData.__module__` is `bynat.cleaning.base`.** `bynat.cleaning.Cleaning` and `bynat.caching.Caching` still import and resolve to the new modules, so existing imports and pickles keep working.
+- **`convert_to_usd` downloads each currency once.** A custom or fake `yfinance` must return history with a `DatetimeIndex`; yearly means are computed from one download covering every year the look-back may need, instead of one download per year. Per-item failures in the currency-code lookup are now logged and left uncached instead of propagating.
+
+### Deprecated
+
+- No deprecations are introduced for `inplace`, `BaseData`, `JsonFile`, or `CsvFile`. These APIs remain supported, and `df.bynat` remains an optional, complementary interface.
+- The misspelled `noisey_terms` parameter is not supported. Use `noisy_terms` instead.
+
+### Added
+
+- `df.bynat` accessor, registered on import, exposing every cleaning, enrichment, and export method on ordinary DataFrames. It never modifies the original frame and has no `inplace` argument. `df.bynat.with_cache(directory_or_manager)` selects the cache.
+- `bynat.read_json(path, key=None)` and `bynat.read_csv(path, **read_kwargs)` return plain DataFrames.
+- `bynat.caching.shared_cache_manager(cache_dir=None)` returns one `CacheManager` per resolved directory.
+- Provider protocols `Translator`, `Geocoder`, and `RateSource` in `bynat.cleaning.enrich`, with `GoogleTranslatorProvider`, `NominatimGeocoder`, and `YFinanceRateSource` as defaults. `translate_categorical_column`, `translate_conditional_column`, `fill_missing_coordinates`, and `convert_to_usd` accept `provider=`.
+- `translate_conditional_column(random_state=0)` makes partition sampling reproducible; pass `None` for unseeded sampling.
+- `mypy` configuration for the cache manager and the cleaning helpers, a `dev` extra, and a CI type-checking job.
+- `benchmarks/` scripts comparing the optimized methods with the `0.3.0` algorithms.
+
+### Fixed
+
+- `split_list_objects(inplace=True, explode_rows=True)` now reshapes the original object instead of silently leaving it unchanged.
+- pandas operations on `BaseData` no longer construct a new `CacheManager` each time; derived frames share the original's manager, which is created on first use.
+- `melt_transform_pivot` results keep the source frame's `CacheManager` instead of falling back to the default cache directory.
+- `handle_outliers` and `drop_outliers` no longer fail or miss outliers in groups with null hierarchy keys on pandas 2, because bounds are no longer merged back on the key columns.
+
+### Changed
+
+- `Cleaning.py` is split into `columns`, `text`, `stats`, `enrich` (`translate`, `geocode`, `currency`, `nlp`, `engine`, `providers`), `io`, `accessor`, and `base` modules, and `Caching.py` is now `bynat/caching/manager.py`. `bynat.cleaning` re-exports the same public names.
+- Translation, geocoding, currency-code lookup, and NLP extraction share one cached-lookup engine: unique values, cache lookup, fetching, `save_every` checkpoints, and logged, uncached failures.
+- Translation no longer sleeps 0.2 seconds after each value. Providers with `translate_batch` get chunks of values; otherwise requests run in a small rate-limited thread pool (`GoogleTranslatorProvider`: four workers, at most five requests per second, one translator per thread).
+- `extract_keywords` builds the combined source text with vectorized concatenation instead of a row-wise `agg(..., axis=1)`, matches each unique combined text once with a single combined pattern, or an Aho-Corasick automaton for ASCII text when `pyahocorasick` is installed, and removes keywords once per unique value. Results are unchanged.
+- `handle_outliers` and `drop_outliers` share one generator of per-level outlier masks with one grouped `quantile([0.25, 0.75])` per level and no merge. Results are unchanged.
+- `translate_conditional_column` processes partitions with one `groupby` instead of filtering the frame once per partition.
+- `hierarchy_cols` given as a single string to `handle_outliers` or `drop_outliers` is treated as one column, as in `fill_missing`.
+
 ## 0.3.0
 
 This release adds a SQLite-backed caching system with automatic migration from legacy JSON caches, safer concurrent cache updates, and improved cache persistence, alongside optional hierarchical statistics in hierarchy-aware cleaning methods and configurable spaCy pipeline components, while preserving existing default behavior.

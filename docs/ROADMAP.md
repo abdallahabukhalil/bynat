@@ -4,9 +4,10 @@ This roadmap is written against the code as it is, not as it might be. Every ite
 
 ## 1. Project context
 
-`bynat` is a small utility library (about 3,200 lines in `bynat/cleaning/Cleaning.py` and 595 in `bynat/caching/Caching.py`).
+`bynat` is a small utility library. The cleaning code lives in focused modules under `bynat/cleaning/` and the cache in `bynat/caching/manager.py`.
 
-- **`bynat.cleaning.BaseData`** subclasses `pandas.DataFrame` and adds column helpers, text extraction, hierarchical outlier handling, imputation and statistics, external-service enrichment (translation, geocoding, currency, spaCy), and JSON/SQL export. `JsonFile` and `CsvFile` are loading subclasses.
+- **Cleaning functions** in `columns`, `text`, `stats`, `enrich` (`translate`, `geocode`, `currency`, `nlp`, `engine`, `providers`), and `io` take a DataFrame first and return a new one: column helpers, text extraction, hierarchical outlier handling, imputation and statistics, external-service enrichment (translation, geocoding, currency, spaCy), and JSON/SQL export and loading.
+- **`BaseData`**, `JsonFile`, and `CsvFile` (`bynat.cleaning.base`) are supported public class-based APIs. `BaseData` remains a supported `pandas.DataFrame` subclass over the shared functions. **`df.bynat`** (`bynat.cleaning.accessor`) is an optional complementary interface for ordinary DataFrames, not a replacement or required access path. `bynat.cleaning.Cleaning` and `bynat.caching.Caching` are compatibility aliases.
 - **`bynat.caching.CacheManager`** keeps one SQLite database per cache directory (`cache.sqlite3`) holding nested dictionaries keyed by column, importing legacy `<func_name>_cache.json` files on first read. Its public methods are `load_function_cache`, `get_column_cache`, `save_function_cache`, and `delete_column_cache`. There is no `get`, `set`, `clear`, or TTL API.
 
 ## 2. Principles
@@ -17,11 +18,12 @@ This roadmap is written against the code as it is, not as it might be. Every ite
 4. **Minimal footprint.** Core dependencies stay `numpy` and `pandas`. Heavy integrations stay optional and are imported lazily with `_import_optional`. Prefer the standard library (`sqlite3`, `logging`, `tempfile`) over new dependencies.
 5. **Tests do not touch the network.** External services are replaced with fake modules (`tests/test_integrations.py`). Light extras with offline behavior (`pyahocorasick`, SQLAlchemy with SQLite) are also tested for real when installed.
 
-## 3. Current state (`0.3.0`)
+## 3. Current state (`0.6.0`)
 
 - **Python:** `>=3.11`. CI runs Ubuntu and Windows on 3.11 and 3.13, a Ruff lint job, and an extras job (`.[categorization,sql]`).
-- **Tests:** 151 full-suite tests passed; the focused cache tests live in `tests/test_caching.py`. Three are skipped unless the `categorization` and `sql` extras are installed.
-- **Lint:** `ruff check bynat tests` is clean with `E`, `F`, `W`, `I`, `UP` (`E501` ignored; see `pyproject.toml`).
+- **Tests:** 289 full-suite tests pass on pandas 3 (pandas 2 skips the comparisons against the `0.3.0` outlier merge, which mishandles null keys there). Six are skipped unless the `categorization` and `sql` extras are installed. Equivalence tests for the optimized methods live in `tests/test_equivalence.py`.
+- **Lint:** `ruff check bynat tests benchmarks` is clean with `E`, `F`, `W`, `I`, `UP` (`E501` ignored; see `pyproject.toml`).
+- **Types:** `python -m mypy` is clean for the scope in `[tool.mypy]`: the cache manager and the cleaning helpers. The supported class wrappers in `bynat/cleaning/base.py` may remain outside the initial scope while the remaining helper modules are brought into coverage incrementally; this is not a removal plan.
 - **Row-wise iteration audit:** no `apply(axis=1)`, `iterrows`, or `itertuples` in `bynat/`. Unique-value loops exist in the enrichment methods by design (Principle 1).
 
 ### Done
@@ -46,67 +48,91 @@ This roadmap is written against the code as it is, not as it might be. Every ite
 | 0.3.0 | `handle_outliers`, `drop_outliers`, and `fill_missing` optionally return original-data hierarchical statistics without changing their default return contracts | `BaseData.handle_outliers`, `BaseData.drop_outliers`, `BaseData.fill_missing`, `tests/test_hierarchical_stats.py` |
 | 0.3.0 | `extract_entities_nlp` accepts configurable spaCy pipeline components, validates required components, warns on unknown names, and isolates configuration-specific caches | `BaseData.extract_entities_nlp`, `tests/test_integrations.py` |
 | 0.3.0 | `CACHE-01` SQLite cache backend: per-directory key-value store that replaces full-file JSON rewrites, one-time legacy `*_cache.json` migration, delta-only checkpoint saves against deep baselines, `BEGIN IMMEDIATE` + WAL busy-timeout concurrency, and baseline-scoped `delete_column_cache` | `bynat/caching/Caching.py` (`CacheManager`), `tests/test_caching.py` |
+| 0.6.0 | `ENRICH-01` one cached-lookup engine (`_cached_map`) for the translation, geocoding, currency-code, and NLP lookups, with `Translator`, `Geocoder`, and `RateSource` protocols accepted through `provider=` | `bynat/cleaning/enrich/`, `tests/test_enrichment.py` |
+| 0.6.0 | `PERF-01` translation batches or a rate-limited thread pool instead of `sleep(0.2)` per value; one rate download per currency | `enrich/translate.py`, `enrich/currency.py`, `enrich/providers.py` |
+| 0.6.0 | `PERF-02` `extract_keywords` on unique texts with one combined pattern (Aho-Corasick for ASCII text when installed) | `bynat/cleaning/text.py`, `tests/test_equivalence.py`, `benchmarks/bench_extract_keywords.py` |
+| 0.6.0 | `PERF-03` `translate_conditional_column` partitions through one `groupby`, reproducible `random_state` | `enrich/translate.py` |
+| 0.6.0 | `PERF-04` one generator of per-level outlier masks, one grouped `quantile([0.25, 0.75])` per level, no merge | `bynat/cleaning/stats.py`, `tests/test_equivalence.py`, `benchmarks/bench_outliers.py` |
+| 0.6.0 | `API-01` optional `df.bynat` accessor and `bynat.read_json` / `bynat.read_csv`, alongside the supported `BaseData` / `JsonFile` / `CsvFile` class API and lazily created/shared `CacheManager` | `bynat/cleaning/accessor.py`, `bynat/cleaning/base.py`, `tests/test_accessor.py` |
+| 0.6.0 | `API-02` transformations return new objects by default; where meaningful, `inplace=True` mutates the original object and returns `None` (or the documented statistics result) | `bynat/cleaning/base.py`, `tests/test_inplace_deprecation.py` |
+| 0.6.0 | `ARCH-01` `Cleaning.py` split into modules, `Caching.py` renamed to `manager.py`, legacy module paths kept as aliases | `bynat/cleaning/`, `bynat/caching/` |
+| 0.6.0 | `QA-01` mypy for the cache manager and the cleaning helpers, CI job; supported class wrappers remain a separate gradual-typing boundary | `pyproject.toml`, `.github/workflows/test.yml` |
+
+### Public API policy
+
+- `BaseData(data)`, `JsonFile`, and `CsvFile` remain supported public APIs.
+- `df.bynat` is an optional, complementary interface, not a replacement for the class-based API.
+- `inplace` remains supported wherever meaningful; its behavior and return contract must be consistent and documented.
+- Shared implementations should prevent the class-based API and accessor from drifting apart.
+- Roadmap tasks must preserve these decisions unless a decision is explicitly revisited and approved.
 
 ## 4. Backlog
 
-Priority: **P1** correctness or data safety, **P2** performance or maintainability, **P3** nice to have. Effort: **S** under a day, **M** a few days, **L** a week or more.
+**Priority:**
+- **P1** correctness or data safety
+- **P2** performance or maintainability
+- **P3** nice to have
 
-### Milestone 3 (`0.4.0`): cache and enrichment engine
+**Effort:**
+- **S** under a day
+- **M** a few days
+- **L** a week or more.
 
-#### `ENRICH-01`: one cached-lookup engine with injectable providers (P2, M)
-- **Problem:** `translate_categorical_column`, `translate_conditional_column`, `fill_missing_coordinates`, `convert_to_usd`, and `extract_entities_nlp` each re-implement the same loop: unique values, cache lookup, fetch misses, checkpoint every `save_every`, map back. Providers are hard-coded (`GoogleTranslator`, `Nominatim`, `yfinance`).
-- **Plan:** `_cached_map(series, fetch, bucket, save_every)` plus small `Protocol`s (`Translator`, `Geocoder`, `RateSource`) with the current services as defaults, accepted through an optional `provider=` argument. This replaces the fake-module patching in tests with plain provider objects.
-- **Done when:** the five methods use the engine, behavior matches the existing `tests/test_integrations.py`, and a custom provider can be passed without monkeypatching.
+### Next minor release
 
-#### `PERF-01`: batch external calls (P2, S)
-- `translate_*`: replace the sequential `translate` plus `time.sleep(0.2)` (lines 1314, 1437) with `translate_batch` or a small rate-limited thread pool.
-- `convert_to_usd`: replace one `yfinance.Ticker(...).history` per currency and year (line 1821) with one download per currency across the needed year range, then yearly means.
-- **Done when:** fake-provider tests show one call per currency, and output matches the current tests.
+### Milestone 7 (`0.7.0`): analytics integration
 
-#### `PERF-02`: `extract_keywords` on unique texts with one pattern (P2, S)
-- **Problem:** one regex pass over the full column per keyword (line 893), plus one per keyword for removal, all on rows rather than unique texts. Cost is O(keywords × rows).
-- **Plan:** work on `combined_text.unique()` and map back, as `categorize_by_reference` already does, using a single alternation (or Aho-Corasick when the extra is installed).
-- **Done when:** an equivalence test passes over keyword priority, `use_regex`, `remove_extracted`, and repeated calls into an existing column, plus a benchmark at 10k, 100k, and 1M rows.
+#### `ANALYTICS-01`: integrate the analytics library (P1, M)
+- **Problem:** the existing analytics library is separate from `bynat`, so its functionality is not yet available through the package's public API.
+- **Plan:** integrate the existing library under `bynat.analytics`, preserving its current behavior and defining clear public API and output contracts. Keep analytics logic independent of application-specific integrations such as Power BI.
+- **Done when:** the analytics functionality is accessible through the documented package API, existing behavior is preserved, and tests cover public interfaces and output contracts.
 
-#### `PERF-03`: `translate_conditional_column` partition sampling (P2, S)
-- **Problem:** `result[result[partition_col] == partition]` inside a loop is O(partitions × rows) (line 1254). `available_texts.sample(n=...)` (line 1263) has no `random_state`, so results are not reproducible even though the `langdetect` seed is fixed.
-- **Plan:** `groupby(partition_col)` and a `random_state` parameter (default `0`).
+### Milestone 8 (`0.8.0`): data quality
 
-#### `PERF-04`: one-pass hierarchical IQR (P2, S)
-- **Problem:** `handle_outliers` and `drop_outliers` are near-duplicates (lines 1863 and 1961). Each hierarchy level runs `groupby` twice plus a merge, and both carry dead `level` and `col_outliers_count` bookkeeping.
-- **Plan:** one private generator of per-level outlier masks, with `groupby(...).quantile([0.25, 0.75])` mapped back through `transform`. The two public methods become thin wrappers.
-- **Done when:** existing outlier tests pass unchanged and a benchmark is recorded.
+#### `DQ-01`: DataFrame quality profiling (P1, M)
+- **Problem:** users need a structured way to assess data quality before cleaning or analysis without manually combining checks for missing values, duplicates, column types, and descriptive statistics.
+- **Plan:** add a profiling API that produces a structured report covering missing values, duplicate rows, column types, and relevant descriptive statistics. Keep profiling non-mutating and make its output suitable for programmatic use.
+- **Done when:** the report has a documented, stable structure, covers supported data types and edge cases, and tests verify its results without modifying the input.
 
-### Milestone 4 (`0.5.0`): API shape. Each item needs decision D-03 first.
+#### `DQ-02`: declarative DataFrame quality checks (P1, M)
+- **Problem:** users need to define and evaluate data quality requirements consistently instead of implementing ad hoc validation logic for every dataset.
+- **Plan:** add declarative checks for required columns, missing-value policies, uniqueness, numeric ranges, and allowed values. Return structured validation results identifying failed checks and relevant violations. Keep validation separate from automatic cleaning.
+- **Done when:** supported rules can be declared and evaluated through a documented API, results identify failures clearly, and tests cover valid data, invalid data, and edge cases without modifying the input.
 
-#### `API-01`: pandas accessor (P2, L)
-- **Problem:** subclassing `DataFrame` is fragile. `_constructor` (line 124) builds a new `CacheManager` on every pandas operation (line 154), `_metadata` is dropped by many operations, and pandas recommends accessors for extensions.
-- **Plan:** register `df.bynat.<method>()` via `pd.api.extensions.register_dataframe_accessor`, sharing implementations with `BaseData`. Keep `BaseData`, `JsonFile`, and `CsvFile` as thin deprecated wrappers for one minor version. Replace the loader subclasses with `bynat.read_json` and `bynat.read_csv` helpers.
+### Milestone 9 (`0.9.0`): API maintenance
 
-#### `API-02`: retire `inplace` (P2, M)
-- **Problem:** every transformation accepts `inplace`, but the early-exit paths return `self` (an alias) while normal paths return a copy (`return self if not inplace else None`, 15 sites starting at line 312). `split_list_objects(inplace=True, explode_rows=True)` cannot work, as its docstring admits. pandas itself is moving away from `inplace` under Copy-on-Write.
-- **Plan:** always return a new object. Emit a `DeprecationWarning` when `inplace=True` is passed, and remove it in the following minor version.
+#### `DEPR-02`: standardize transformation behavior and maintenance boundaries (P2, S)
+- **Problem:** transformation methods still need one consistent `inplace` convention, while the supported class-based API and its implementation module must remain part of the public surface.
+- **Plan:** standardize `inplace` behavior according to `API-02`, without deleting `BaseData`, `JsonFile`, `CsvFile`, or `bynat/cleaning/base.py`. Add the remaining helper modules to the mypy scope; the class wrappers may remain a separate gradual-typing boundary. Keep the `bynat.cleaning.Cleaning` and `bynat.caching.Caching` aliases for at least one additional minor release.
+- **Done when:** the `inplace` mutation and return behavior is documented and tested consistently, the supported class API and imports continue to work, the remaining helper modules are covered by mypy, the aliases remain available for the stated period, and the full test suite and mypy checks pass.
 
-### Milestone 4 (`0.6.0`): API shape. Each item needs decision D-03 first.
+#### `DEPR-01`: deprecate the misspelled NLP parameter (P3, S)
+- **Problem:** `extract_entities_nlp(noisey_terms=...)` preserves a misspelled parameter alias that should no longer be part of the long-term API.
+- **Plan:** emit a `DeprecationWarning` when `noisey_terms` is used, directing users to `noisy_terms`.
+- **Done when:** the deprecated alias emits the expected warning, `noisy_terms` works normally, and tests cover both paths.
 
-#### `ARCH-01`: split `Cleaning.py` into modules (P2, M)
-- **Plan:** `cleaning/columns.py` (rename, drop, reorder, move), `text.py` (keywords, truncate, categorize), `stats.py` (outliers, `fill_missing`, `get_hierarchical_stats`), `enrich/` (translate, geocode, currency, nlp, engine), and `io.py` (JSON, SQL, loaders). `bynat.cleaning` re-exports the same names, so imports do not change. Rename `Caching.py` and `Cleaning.py` to lowercase module names, with shims.
-- **Done when:** the module move is a pure refactor with no behavior diff and the full suite passes unchanged.
+#### `PERF-05`: rates through the engine (P3, S)
+- **Problem:** `convert_to_usd` resolves currency codes through `_cached_map`, but year-range rate downloads remain a dedicated loop because each fetch populates multiple `CODE_YEAR` keys.
+- **Plan:** revisit integration if the engine gains a multi-key store. Keep the existing dedicated download loop until that abstraction provides a clear benefit.
+- **Done when:** the existing implementation remains documented as intentional or a multi-key engine integration is implemented with equivalent results and tests.
 
-#### `QA-01`: Mypy (P3, M)
-- Add `mypy` for `bynat/caching` first, then the cleaning helpers. Typing a `DataFrame` subclass is noisy, so do this after `API-01`.
+### Milestone 10 (`1.0.0`): I/O and compatibility
 
-### Later or optional
+#### `IO-01`: append-friendly output (P3, M)
+- **Problem:** `save_to_json(append=True)` re-reads and rewrites the entire file, making repeated appends increasingly expensive (`bynat/cleaning/io.py`).
+- **Plan:** add an append-friendly output option, such as JSON Lines or SQLite, that avoids rewriting the complete dataset on each append while preserving the existing JSON behavior.
+- **Done when:** repeated appends do not require rewriting the entire accumulated dataset, output can be read back correctly, and tests cover appends, existing files, and failure cases.
 
-- `DEPR-01` (P3, S): deprecate the misspelled `extract_entities_nlp(noisey_terms=...)` alias with a warning.
-- `IO-01` (P3, M): an append-friendly output (JSON Lines or SQLite) so `save_to_json(append=True)` does not re-read and rewrite the whole file (line 2887).
-- `COMPAT-01` (P3, S): Python 3.10. Low value. It needs `typing.Self` from `typing_extensions` and a CI run before any `requires-python` change.
+#### `COMPAT-01`: Python 3.10 support (P3, S)
+- **Problem:** the package currently requires Python 3.11 or newer, limiting use in Python 3.10 environments.
+- **Plan:** evaluate compatibility using `typing.Self` from `typing_extensions` and a dedicated Python 3.10 CI run before changing `requires-python`.
+- **Done when:** the test suite passes on Python 3.10, compatibility requirements are satisfied, and package metadata is updated only if support is confirmed.
 
 ## 5. Decisions
 
 - **D-01: `group_key` is always a tuple.** One value per hierarchy column, including single-column levels (`("EG",)`), as pinned by `tests/test_hierarchical_stats.py`. Resolved: keep it.
 - **D-02: `mean` and `median` on non-numeric targets raise pandas' `TypeError`.** Resolved: keep failing fast.
-- **D-03: return convention without `inplace`.** Open. Recommended: always return a new object (see `API-02`), and stop returning aliases from early exits. This changes behavior for callers who rely on `inplace=True`, so it needs the maintainer's approval.
+- **D-03: return convention with supported `inplace`.** Resolved: class-based callers remain supported, and transformations return a new object by default, including from early exits. Where an operation supports in-place behavior, `inplace=True` mutates the original object and returns `None`; methods that produce an additional documented result return that result instead. `inplace` is not scheduled for deprecation or removal.
 - **D-04: concurrency for the cache.** Resolved in favor of `sqlite3` (`CACHE-01`) over a lock-directory protocol or a `portalocker` dependency. It gives locking and atomic commits from the standard library.
 - **D-05: logging defaults.** Resolved in `0.2.0`: no `NullHandler`, so `WARNING`s reach stderr through Python's last-resort handler and keep the visibility users had with `print`, while `INFO` progress stays quiet.
 - **D-06: `CACHE-01` deletion semantics.** A bucket deletion is calculated against the manager's last committed baseline and deletes only those known rows. Rows added concurrently after that baseline are preserved, preventing a stale manager from erasing unrelated concurrent work. Resolved: keep the safer preservation behavior.

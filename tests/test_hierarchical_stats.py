@@ -270,7 +270,9 @@ def test_get_hierarchical_stats_returns_requested_type_for_empty_results(tmp_pat
 
 
 def test_get_hierarchical_stats_has_no_nested_functions_or_apply_lambda(tmp_path):
-    source = textwrap.dedent(inspect.getsource(BaseData.get_hierarchical_stats))
+    from bynat.cleaning import stats
+
+    source = textwrap.dedent(inspect.getsource(stats.get_hierarchical_stats))
     tree = ast.parse(source)
 
     assert not any(
