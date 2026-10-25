@@ -80,9 +80,9 @@ This roadmap is written against the code as it is, not as it might be. Every ite
 
 ### Next minor release
 
-**### Milestone 7 (`0.7.0`): analytics integration**
+### Milestone 7 (`0.7.0`): analytics integration
 
-**#### `ANALYTICS-01`: integrate the analytics library (P1, M)**
+#### `ANALYTICS-01`: integrate the analytics library (P1, M)
 - **Problem:** the existing analytics library is separate from `bynat`, so its functionality is not yet available through the package's public API.
 - **Plan:** integrate the existing library under `bynat.analytics`, preserving its current behavior and defining clear public API and output contracts. Keep analytics logic independent of application-specific integrations such as Power BI.
 - **Done when:** the analytics functionality is accessible through the documented package API, existing behavior is preserved, and tests cover public interfaces and output contracts.
