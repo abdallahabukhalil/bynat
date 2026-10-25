@@ -150,22 +150,19 @@ def test_read_helpers_raise_like_the_legacy_loaders(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("factory", "replacement"),
+    "factory",
     [
-        (lambda path: BaseData({"a": [1]}, cache_dir=path), "df.bynat"),
-        (lambda path: JsonFile({"a": [1]}, cache_dir=path), "read_json"),
-        (lambda path: CsvFile({"a": [1]}, cache_dir=path), "read_csv"),
+        lambda path: BaseData({"a": [1]}, cache_dir=path),
+        lambda path: JsonFile({"a": [1]}, cache_dir=path),
+        lambda path: CsvFile({"a": [1]}, cache_dir=path),
     ],
 )
-def test_legacy_classes_warn_once_at_the_caller(tmp_path, factory, replacement):
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
+def test_supported_classes_construct_without_warning(tmp_path, factory):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
         frame = factory(tmp_path)
 
-    deprecations = [warning for warning in caught if warning.category is DeprecationWarning]
-    assert len(deprecations) == 1
-    assert replacement in str(deprecations[0].message)
-    assert deprecations[0].filename == __file__
+    assert isinstance(frame, BaseData)
 
     with warnings.catch_warnings():
         warnings.simplefilter("error", DeprecationWarning)

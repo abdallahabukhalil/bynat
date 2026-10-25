@@ -201,6 +201,12 @@ def extract_entities_nlp(
     ```
     """
 
+    if "noisey_terms" in target_cols_and_json_keys:
+        raise TypeError(
+            "extract_entities_nlp() got an unexpected keyword argument "
+            "'noisey_terms'; did you mean 'noisy_terms'?"
+        )
+
     normalized_disable = _normalize_nlp_disable(disable)
     ignored_terms: set[str] = set()
 

@@ -4,7 +4,7 @@
 
 ## Status
 
-Version `0.3.0` is the project version declared in `pyproject.toml`. See [CHANGELOG.md](CHANGELOG.md) for behavior changes since `0.1.1` and [ROADMAP.md](./docs/ROADMAP.md) for planned work.
+Version `0.6.0` is the project version declared in `pyproject.toml`. See [CHANGELOG.md](CHANGELOG.md) for behavior changes since `0.1.1` and [ROADMAP.md](./docs/ROADMAP.md) for planned work.
 
 ## Installation
 

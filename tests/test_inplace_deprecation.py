@@ -72,35 +72,52 @@ def test_early_exit_with_stats_returns_a_copy(tmp_path):
     assert stats.empty
 
 
-def test_inplace_true_still_mutates_and_warns_at_the_caller(tmp_path):
+def test_inplace_true_still_mutates_and_returns_none(tmp_path):
     frame = _frame(tmp_path)
 
-    with pytest.warns(DeprecationWarning, match="inplace=True is deprecated") as record:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
         assert frame.drop_by_substring("name", inplace=True) is None
 
     assert list(frame.columns) == ["id", "latitude"]
-    assert [warning.filename for warning in record] == [__file__]
 
 
 @pytest.mark.parametrize(
-    "call",
+    ("call", "returns_stats", "removes_outlier"),
     [
-        lambda frame: frame.handle_outliers("v", hierarchy_cols=["g"], inplace=True),
-        lambda frame: frame.handle_outliers("v", hierarchy_cols=["g"], inplace=True, get_hierarchical_stats=True),
-        lambda frame: frame.fill_missing("v", hierarchy_cols="g", inplace=True),
-        lambda frame: frame.rename_all_DOTS(inplace=True),
+        (lambda frame: frame.handle_outliers("v", hierarchy_cols=["g"], inplace=True), False, True),
+        (
+            lambda frame: frame.handle_outliers(
+                "v", hierarchy_cols=["g"], inplace=True, get_hierarchical_stats=True
+            ),
+            True,
+            True,
+        ),
+        (lambda frame: frame.fill_missing("v", hierarchy_cols="g", inplace=True), False, False),
+        (lambda frame: frame.rename_all_DOTS(inplace=True), False, False),
     ],
 )
-def test_every_inplace_path_warns_exactly_once_at_the_caller(tmp_path, call):
+def test_every_inplace_path_is_silent_and_preserves_behavior(
+    tmp_path, call, returns_stats, removes_outlier
+):
     frame = _frame(tmp_path, {"g": ["a"] * 6, "v": [1.0, 2.0, 3.0, 4.0, 5.0, 100.0]})
+    before = frame.copy()
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        call(frame)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        result = call(frame)
 
-    deprecations = [warning for warning in caught if warning.category is DeprecationWarning]
-    assert len(deprecations) == 1
-    assert deprecations[0].filename == __file__
+    assert isinstance(frame, BaseData)
+    if returns_stats:
+        assert isinstance(result, pd.DataFrame)
+        assert not result.empty
+    else:
+        assert result is None
+
+    if removes_outlier:
+        assert bool(frame["v"].isna().iloc[-1])
+    else:
+        pd.testing.assert_frame_equal(pd.DataFrame(frame), pd.DataFrame(before))
 
 
 def test_inplace_false_and_default_do_not_warn(tmp_path):
@@ -116,7 +133,8 @@ def test_split_list_objects_inplace_explode_reshapes_the_original(tmp_path):
     frame = _frame(tmp_path, {"id": [1, 2], "items": [["a", "b"], ["c"]]})
     expected = frame.split_list_objects("items", explode_rows=True, first=[0, 1])
 
-    with pytest.warns(DeprecationWarning):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
         assert frame.split_list_objects("items", explode_rows=True, inplace=True, first=[0, 1]) is None
 
     pd.testing.assert_frame_equal(pd.DataFrame(frame), pd.DataFrame(expected))
@@ -136,7 +154,8 @@ def test_melt_transform_pivot_result_keeps_the_cache_manager(tmp_path):
 def test_inplace_results_are_not_aliases(tmp_path):
     frame = _frame(tmp_path)
 
-    with pytest.warns(DeprecationWarning):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
         frame.rename_all_DOTS(inplace=True)
 
     result = frame.rename_all_DOTS()

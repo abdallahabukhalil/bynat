@@ -1,13 +1,12 @@
 """
-Deprecated `pandas.DataFrame` subclasses kept for one minor version.
+`pandas.DataFrame` subclasses: `BaseData`, `JsonFile`, and `CsvFile`.
 
-`BaseData`, `JsonFile`, and `CsvFile` are thin wrappers over the functions in
-the `columns`, `text`, `stats`, `enrich`, and `io` modules, which the
-`df.bynat` accessor shares. New code should use plain DataFrames with the
-accessor, and `bynat.read_json` / `bynat.read_csv` for loading.
+They are thin wrappers over the functions in the `columns`, `text`, `stats`,
+`enrich`, and `io` modules, which the `df.bynat` accessor shares. `BaseData`
+also supports the `inplace=True` argument that plain DataFrames with the
+accessor do not, and `JsonFile` / `CsvFile` load data directly from disk.
 """
 
-import functools
 import os
 from collections.abc import Callable, Iterable
 from typing import Any, Self
@@ -29,11 +28,8 @@ from ._common import (  # noqa: F401  (re-exported for `bynat.cleaning.Cleaning`
     _dedupe_key,
     _import_optional,
     _left_merge_aligned,
-    _legacy_construction_quiet,
-    _quiet_legacy_construction,
     _require_positive_int,
     _validate_output_type,
-    _warn_deprecated,
     logger,
 )
 from .enrich import currency, geocode, nlp, translate
@@ -42,43 +38,20 @@ from .enrich.providers import Geocoder, RateSource, Translator
 
 __all__ = ['BaseData', 'JsonFile', 'CsvFile']
 
-_INPLACE_DEPRECATION = (
-    "inplace=True is deprecated and will be removed in the next minor release; "
-    "use the returned dataframe instead."
-)
-
-_INPLACE_NOTE = """
-    Deprecated:
-        `inplace=True` still modifies the object and returns None, but emits
-        a `DeprecationWarning` and will be removed in the next minor release.
-        Without it, a new object is always returned, including when the
-        method has nothing to change.
-"""
-
-
-def _shares_doc(func: Callable, inplace: bool = True) -> Callable[[Callable], Callable]:
+def _shares_doc(func: Callable) -> Callable[[Callable], Callable]:
     """Reuse a shared implementation's docstring on a `BaseData` method."""
     def decorate(method: Callable) -> Callable:
-        method.__doc__ = (func.__doc__ or "").rstrip() + "\n" + (_INPLACE_NOTE if inplace else "")
+        method.__doc__ = (func.__doc__ or "").rstrip()
+
         return method
 
     return decorate
-
-
-def _construct_quietly(cls: type, *args: Any, **kwargs: Any) -> Any:
-    """Construct a legacy class for pandas internals without a deprecation warning."""
-    with _quiet_legacy_construction():
-        return cls(*args, **kwargs)
 
 
 class BaseData(pd.DataFrame):
     """
     Extend `pandas.DataFrame` with project-specific cleaning, translation,
     enrichment, and export helpers.
-
-    Deprecated:
-        Use a plain `pandas.DataFrame` with the `df.bynat` accessor instead.
-        `BaseData` will be removed in the next minor release.
 
     Notes:
         Instances keep a `CacheManager` in metadata so cached helper methods can
@@ -96,10 +69,9 @@ class BaseData(pd.DataFrame):
 
         Returns:
             Callable: Builds the current subclass, so chained operations keep
-            producing `BaseData`-derived objects, without the deprecation
-            warning meant for direct construction.
+            producing `BaseData`-derived objects.
         """
-        return functools.partial(_construct_quietly, type(self))
+        return type(self)
 
 
     def __init__(self, data = None, cache_dir: str | os.PathLike | None = None, *args, **kwargs) -> None:
@@ -122,12 +94,6 @@ class BaseData(pd.DataFrame):
         Notes:
             File-specific loading is implemented by `JsonFile` and `CsvFile`.
         """
-        if not _legacy_construction_quiet.get():
-            _warn_deprecated(
-                f"{type(self).__name__} is deprecated and will be removed in the next minor "
-                "release; use a pandas DataFrame with the `df.bynat` accessor instead."
-            )
-
         object.__setattr__(self, '_bynat_cache_dir', cache_dir)
         object.__setattr__(self, '_bynat_cache_manager', None)
 
@@ -152,11 +118,10 @@ class BaseData(pd.DataFrame):
 
 
     def _finish(self, result: pd.DataFrame, inplace: bool) -> Self | None:
-        """Return `result`, or copy it into this object for deprecated `inplace=True`."""
+        """Return `result`, or copy it into this object when `inplace=True`."""
         if not inplace:
             return result
 
-        _warn_deprecated(_INPLACE_DEPRECATION, stacklevel = 4)
         self._update_inplace(result)
         return None
 
@@ -168,7 +133,6 @@ class BaseData(pd.DataFrame):
         if not inplace:
             return (result, hierarchical_stats) if with_stats else result
 
-        _warn_deprecated(_INPLACE_DEPRECATION, stacklevel = 4)
         self._update_inplace(result)
         return hierarchical_stats
 
@@ -495,7 +459,7 @@ class BaseData(pd.DataFrame):
         return self._finish_with_stats(outcome, inplace, get_hierarchical_stats)
 
 
-    @_shares_doc(stats.get_hierarchical_stats, inplace = False)
+    @_shares_doc(stats.get_hierarchical_stats)
     def get_hierarchical_stats(
         self,
         *target_cols,
@@ -544,6 +508,11 @@ class BaseData(pd.DataFrame):
         noisy_terms: set | None = None,
         **target_cols_and_json_keys
     ) -> Self | None:
+        if "noisey_terms" in target_cols_and_json_keys:
+            raise TypeError(
+                "extract_entities_nlp() got an unexpected keyword argument "
+                "'noisey_terms'; did you mean 'noisy_terms'?"
+            )
         result = nlp.extract_entities_nlp(
             self,
             *source_cols,
@@ -559,7 +528,7 @@ class BaseData(pd.DataFrame):
         return self._finish(result, inplace)
 
 
-    @_shares_doc(io.save_to_json, inplace = False)
+    @_shares_doc(io.save_to_json)
     def save_to_json(
             self,
             file_path: str | os.PathLike,
@@ -571,7 +540,7 @@ class BaseData(pd.DataFrame):
         return io.save_to_json(self, file_path, orient = orient, append = append, force_ascii = force_ascii, indent = indent)
 
 
-    @_shares_doc(io.save_to_sql, inplace = False)
+    @_shares_doc(io.save_to_sql)
     def save_to_sql(
             self,
             table_name: str,
@@ -610,10 +579,6 @@ class BaseData(pd.DataFrame):
 class JsonFile(BaseData):
     """
     Load a JSON file into a `BaseData` frame.
-
-    Deprecated:
-        Use `bynat.read_json(...)` and the `df.bynat` accessor instead.
-        `JsonFile` will be removed in the next minor release.
     """
 
     def __init__(
@@ -625,12 +590,6 @@ class JsonFile(BaseData):
         *args,
         **kwargs
     ):
-        if not _legacy_construction_quiet.get():
-            _warn_deprecated(
-                "JsonFile is deprecated and will be removed in the next minor release; "
-                "use bynat.read_json() with the `df.bynat` accessor instead."
-            )
-
         if data is not None and json_file_path is None:
             if isinstance(data, (str, os.PathLike)):
                 path = os.fspath(data)
@@ -645,17 +604,12 @@ class JsonFile(BaseData):
         if data is None and json_file_path is not None:
             data = io.read_json(json_file_path, key = key)
 
-        with _quiet_legacy_construction():
-            super().__init__(data = data, cache_dir = cache_dir, *args, **kwargs)
+        super().__init__(data = data, cache_dir = cache_dir, *args, **kwargs)
 
 
 class CsvFile(BaseData):
     """
     Load a CSV file into a `BaseData` frame.
-
-    Deprecated:
-        Use `bynat.read_csv(...)` and the `df.bynat` accessor instead.
-        `CsvFile` will be removed in the next minor release.
     """
 
     def __init__(
@@ -667,12 +621,6 @@ class CsvFile(BaseData):
         *args,
         **kwargs
     ):
-        if not _legacy_construction_quiet.get():
-            _warn_deprecated(
-                "CsvFile is deprecated and will be removed in the next minor release; "
-                "use bynat.read_csv() with the `df.bynat` accessor instead."
-            )
-
         if read_kwargs is None:
             read_kwargs = {}
 
@@ -690,5 +638,4 @@ class CsvFile(BaseData):
         if data is None and csv_file_path is not None:
             data = io.read_csv(csv_file_path, **read_kwargs)
 
-        with _quiet_legacy_construction():
-            super().__init__(data = data, cache_dir = cache_dir, *args, **kwargs)
+        super().__init__(data = data, cache_dir = cache_dir, *args, **kwargs)

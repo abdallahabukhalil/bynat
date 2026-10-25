@@ -1,13 +1,9 @@
 """Private helpers shared by the cleaning modules, `BaseData`, and the accessor."""
 
-import contextlib
-import contextvars
 import importlib
 import inspect
 import json
 import logging
-import warnings
-from collections.abc import Iterator
 from types import ModuleType
 from typing import Any, TypeVar, cast
 
@@ -27,27 +23,6 @@ _HIERARCHICAL_STATS_COLUMNS = (
     'strategy',
     'statistic',
 )
-
-# Set while bynat builds legacy wrapper objects itself, so only callers that
-# construct `BaseData`, `JsonFile`, or `CsvFile` directly see the deprecation.
-_legacy_construction_quiet: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "bynat_legacy_construction_quiet", default = False
-)
-
-
-@contextlib.contextmanager
-def _quiet_legacy_construction() -> Iterator[None]:
-    """Suppress legacy-class deprecation warnings for internal construction."""
-    token = _legacy_construction_quiet.set(True)
-    try:
-        yield
-    finally:
-        _legacy_construction_quiet.reset(token)
-
-
-def _warn_deprecated(message: str, stacklevel: int = 3) -> None:
-    """Emit a `DeprecationWarning` attributed to the caller's caller."""
-    warnings.warn(message, DeprecationWarning, stacklevel = stacklevel)
 
 
 def _import_optional(module_name: str, distribution: str, feature: str) -> ModuleType:
@@ -166,8 +141,7 @@ def _convert_output(data: pd.DataFrame, output_type: Any) -> Any:
     if output_type is dict:
         return {column: data[column].tolist() for column in data.columns}
 
-    with _quiet_legacy_construction():
-        return output_type(data = data)
+    return output_type(data = data)
 
 
 def _constructor_accepts_data(output_type: Any) -> bool:
