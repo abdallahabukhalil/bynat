@@ -106,11 +106,6 @@ This roadmap is written against the code as it is, not as it might be. Every ite
 - **Plan:** standardize `inplace` behavior according to `API-02`, without deleting `BaseData`, `JsonFile`, `CsvFile`, or `bynat/cleaning/base.py`. Add the remaining helper modules to the mypy scope; the class wrappers may remain a separate gradual-typing boundary. Keep the `bynat.cleaning.Cleaning` and `bynat.caching.Caching` aliases for at least one additional minor release.
 - **Done when:** the `inplace` mutation and return behavior is documented and tested consistently, the supported class API and imports continue to work, the remaining helper modules are covered by mypy, the aliases remain available for the stated period, and the full test suite and mypy checks pass.
 
-#### `DEPR-01`: deprecate the misspelled NLP parameter (P3, S)
-- **Problem:** `extract_entities_nlp(noisey_terms=...)` preserves a misspelled parameter alias that should no longer be part of the long-term API.
-- **Plan:** emit a `DeprecationWarning` when `noisey_terms` is used, directing users to `noisy_terms`.
-- **Done when:** the deprecated alias emits the expected warning, `noisy_terms` works normally, and tests cover both paths.
-
 #### `PERF-05`: rates through the engine (P3, S)
 - **Problem:** `convert_to_usd` resolves currency codes through `_cached_map`, but year-range rate downloads remain a dedicated loop because each fetch populates multiple `CODE_YEAR` keys.
 - **Plan:** revisit integration if the engine gains a multi-key store. Keep the existing dedicated download loop until that abstraction provides a clear benefit.
