@@ -38,6 +38,7 @@
 
 - **Tidy columns:** rename, drop, reorder, move, and reshape columns, and split list values into separate columns.
 - **Work with text:** extract keywords, truncate text at a delimiter, and categorize rows by reference keywords.
+- **Profile data quality:** inspect missing values, duplicate rows, column dtypes, and descriptive statistics in a single structured report.
 - **Handle outliers and gaps:** find outliers and fill missing values by comparing each row with similar rows (grouped by a hierarchy of columns).
 - **Enrich data:** translate values, geocode missing coordinates, convert amounts to USD, and extract entities with spaCy.
 - **Read and write files:** load CSV and JSON files, and save data to JSON or a SQL database.
@@ -558,6 +559,7 @@ Translation, geocoding, currency conversion, and NLP. See [Enrichment with exter
 
 | Method | Parameters | Purpose |
 | --- | --- | --- |
+| `profile` | none | Generates a structured, non-mutating `DataQualityReport` covering missing values, duplicate rows, column dtypes, and descriptive statistics. |
 | `handle_outliers` | `*target_cols`, keyword-only `hierarchy_cols`, `min_samples=5`, `get_hierarchical_stats=False` | Replaces hierarchical-IQR outliers with `NaN`, relaxing the grouping hierarchy step by step. |
 | `drop_outliers` | `*target_cols`, keyword-only `hierarchy_cols`, `min_samples=5`, `get_hierarchical_stats=False` | Drops rows that contain hierarchical-IQR outliers. Rows are dropped by position, so duplicated index labels are safe. |
 | `fill_missing` | `*target_cols`, `strategy="median"`, `hierarchy_cols=None`, `get_hierarchical_stats=False` | Fills missing values step by step through a grouping hierarchy, using `median`, `mean`, `mode`, or the alias `mod`. |
@@ -570,6 +572,55 @@ For `handle_outliers`, `drop_outliers`, and `fill_missing`, passing `get_hierarc
 - The return value is `(result, stats)`.
 - With `inplace=True`, the operation changes the original object and returns `stats` directly.
 - The outlier methods use the default hierarchical `median` statistic. `fill_missing` uses its requested `strategy`.
+
+### Data quality profiling
+
+The `profile()` method (and `bynat.profile(df)`) provides a structured overview of DataFrame quality:
+
+```python
+import bynat
+import pandas as pd
+
+df = pd.DataFrame({
+    "age": [25, 30, None, 30],
+    "city": ["Cairo", "London", "Cairo", "London"],
+})
+
+# Via the accessor
+report = df.bynat.profile()
+
+# Or via the standalone function
+report = bynat.profile(df)
+
+print(report.row_count)                   # 4
+print(report.duplicate_row_count)         # 1
+print(report.total_missing)               # 1
+print(report.overall_missing_proportion)  # 0.125
+print(report.columns[0].name)             # "age"
+print(report.columns[0].dtype)            # "float64"
+print(report.columns[0].missing_count)    # 1
+print(report.columns[0].stats["mean"])    # 28.333...
+print(report.columns[1].stats["top"])     # "Cairo"
+```
+
+The returned `DataQualityReport` is frozen and contains:
+- `row_count` (`int`): total number of rows.
+- `column_count` (`int`): total number of columns.
+- `total_missing` (`int`): total missing values across the entire DataFrame.
+- `overall_missing_proportion` (`float`): missing cells divided by total cells (`0.0` for empty frames).
+- `duplicate_row_count` (`int`): number of duplicate rows (`df.duplicated(keep='first').sum()`).
+- `columns` (`tuple[ColumnReport, ...]`): one report per column, in original column order.
+
+Each `ColumnReport` contains:
+- `name` (`str`): column label.
+- `dtype` (`str`): pandas data type as string.
+- `missing_count` (`int`): missing values in the column.
+- `missing_proportion` (`float`): missing values divided by row count (`0.0` for empty frames).
+- `stats` (`dict[str, Any]`): summary statistics based on column data type:
+  - **Numeric** (`int*`, `float*`, nullable `Int*`/`Float*`, `boolean`): `count`, `mean`, `std`, `min`, `p25`, `p50`, `p75`, `max`.
+  - **Categorical / string / object**: `count`, `unique`, `top`, `top_freq`.
+  - **Datetime**: `count`, `min`, `max`.
+  - **Unsupported / other**: `{}`.
 
 ### Saving data
 

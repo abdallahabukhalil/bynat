@@ -79,6 +79,7 @@ files = [
     "bynat/cleaning/columns.py",
     "bynat/cleaning/enrich",
     "bynat/cleaning/io.py",
+    "bynat/cleaning/profiling.py",
     "bynat/cleaning/stats.py",
     "bynat/cleaning/text.py",
 ]

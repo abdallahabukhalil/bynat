@@ -57,6 +57,7 @@ This roadmap is written against the code as it is, not as it might be. Every ite
 | 0.6.0 | `API-02` transformations return new objects by default; where meaningful, `inplace=True` mutates the original object and returns `None` (or the documented statistics result) | `bynat/cleaning/base.py`, `tests/test_inplace_deprecation.py` |
 | 0.6.0 | `ARCH-01` `Cleaning.py` split into modules, `Caching.py` renamed to `manager.py`, legacy module paths kept as aliases | `bynat/cleaning/`, `bynat/caching/` |
 | 0.6.0 | `QA-01` mypy for the cache manager and the cleaning helpers, CI job; supported class wrappers remain a separate gradual-typing boundary | `pyproject.toml`, `.github/workflows/test.yml` |
+| 0.8.0 | `DQ-01` DataFrame quality profiling: non-mutating `profile` API returning structured `DataQualityReport` with missing values, duplicate rows, column dtypes, and descriptive statistics | `bynat/cleaning/profiling.py`, `tests/test_profiling.py` |
 
 ### Public API policy
 

@@ -16,7 +16,7 @@ import pandas as pd
 
 from bynat.caching import CacheManager
 
-from . import columns, io, stats, text
+from . import columns, io, profiling, stats, text
 from ._common import (  # noqa: F401  (re-exported for `bynat.cleaning.Cleaning` imports)
     _HIERARCHICAL_STATS_COLUMNS,
     _cache_has_value,
@@ -177,6 +177,11 @@ class BaseData(pd.DataFrame):
         """
 
         return pd.DataFrame(self)
+
+
+    @_shares_doc(profiling.profile)
+    def profile(self) -> "profiling.DataQualityReport":
+        return profiling.profile(self)
 
 
     @_shares_doc(columns.drop_by_substring)

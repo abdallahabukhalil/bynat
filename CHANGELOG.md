@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.8.0
+
+This release adds a data quality profiling API (`DQ-01`) that generates a structured, non-mutating report from any DataFrame.
+
+### Added
+
+- `bynat.profile(df)` — a standalone function that returns a `DataQualityReport` covering:
+  - **Missing values**: total count, overall proportion, and per-column count and proportion.
+  - **Duplicate rows**: number of rows that are exact duplicates of a preceding row (`DataFrame.duplicated(keep='first')`).
+  - **Column types**: detected dtype string for every column.
+  - **Descriptive statistics**: per-column summaries based on dtype — `count / mean / std / min / p25 / p50 / p75 / max` for numeric columns; `count / unique / top / top_freq` for string, object, and category columns; `count / min / max` for datetime columns; an empty dict for other dtypes.
+- `bynat.DataQualityReport` and `bynat.ColumnReport` — frozen dataclasses with the documented output contract.
+- `df.bynat.profile()` — the same report available through the pandas accessor on any DataFrame.
+- `BaseData.profile()` — the same report available on the class-based API.
+- `bynat.cleaning.profile`, `bynat.cleaning.DataQualityReport`, and `bynat.cleaning.ColumnReport` are re-exported from `bynat.cleaning`.
+
+### Implementation notes
+
+- Profiling never modifies the input DataFrame.
+- `NaN`, `None`, `pd.NA`, and `NaT` are all counted as missing via `pandas.Series.isna()`.
+- Numeric stats use `numpy.nan*` functions on non-null values only; `std` is the sample standard deviation (`ddof=1`), and is `0.0` for single-value columns.
+- Complex-number columns (`complex64`, `complex128`) fall into the "other" category and produce an empty stats dict.
+- `bynat/cleaning/profiling.py` is included in the mypy scope.
+
 ## 0.6.0
 
 This release moves the cleaning API to a `df.bynat` pandas accessor, splits the implementation into focused modules, routes every external-service method through one cached-lookup engine with injectable providers, and speeds up keyword extraction, outlier detection, and external calls. Review the **Breaking changes** and **Deprecated** sections before upgrading.

@@ -10,7 +10,7 @@ import pandas as pd
 
 from bynat.caching import CacheManager, shared_cache_manager
 
-from . import columns, io, stats, text
+from . import columns, io, profiling, stats, text
 from .enrich import currency, geocode, nlp, translate
 
 __all__ = ['BynatAccessor']
@@ -136,3 +136,5 @@ class BynatAccessor:
 
     save_to_json = _frame_method(io.save_to_json)
     save_to_sql = _frame_method(io.save_to_sql)
+
+    profile = _frame_method(profiling.profile)
