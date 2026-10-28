@@ -243,7 +243,7 @@ class TestColumnDtype:
         assert _col(profile(df), "v").dtype == "float64"
 
     def test_object_dtype_string(self):
-        df = pd.DataFrame({"s": ["a", "b"]})
+        df = pd.DataFrame({"s": pd.Series(["a", "b"], dtype="object")})
         assert _col(profile(df), "s").dtype == "object"
 
     def test_nullable_int_dtype_string(self):
