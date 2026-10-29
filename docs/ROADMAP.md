@@ -57,6 +57,7 @@ This roadmap is written against the code as it is, not as it might be. Every ite
 | 0.6.0 | `API-02` transformations return new objects by default; where meaningful, `inplace=True` mutates the original object and returns `None` (or the documented statistics result) | `bynat/cleaning/base.py`, `tests/test_inplace_deprecation.py` |
 | 0.6.0 | `ARCH-01` `Cleaning.py` split into modules, `Caching.py` renamed to `manager.py`, legacy module paths kept as aliases | `bynat/cleaning/`, `bynat/caching/` |
 | 0.6.0 | `QA-01` mypy for the cache manager and the cleaning helpers, CI job; supported class wrappers remain a separate gradual-typing boundary | `pyproject.toml`, `.github/workflows/test.yml` |
+| Unreleased | `DQ-01` DataFrame quality profiling API producing non-mutating structured reports (`ProfileReport`, `DatasetProfile`, `ColumnProfile`) with dataset metrics, per-kind statistics, and DataFrame/dict conversion | `bynat/cleaning/profile.py`, `tests/test_profile.py` |
 
 ### Public API policy
 
@@ -90,6 +91,7 @@ This roadmap is written against the code as it is, not as it might be. Every ite
 ### Milestone 8 (`0.8.0`): data quality
 
 #### `DQ-01`: DataFrame quality profiling (P1, M)
+- **Status:** done (unreleased).
 - **Problem:** users need a structured way to assess data quality before cleaning or analysis without manually combining checks for missing values, duplicates, column types, and descriptive statistics.
 - **Plan:** add a profiling API that produces a structured report covering missing values, duplicate rows, column types, and relevant descriptive statistics. Keep profiling non-mutating and make its output suitable for programmatic use.
 - **Done when:** the report has a documented, stable structure, covers supported data types and edge cases, and tests verify its results without modifying the input.

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+This release introduces the DataFrame data quality profiling API (`DQ-01`), providing non-mutating profiling reports with dataset-level metrics, per-column quality summaries, kind detection, and descriptive statistics across pandas data types.
+
+### Added
+
+- Data quality profiling API: `bynat.profile(df, *columns, output_type=None)`, `bynat.cleaning.profile`, `df.bynat.profile(*columns, output_type=None)`, and `BaseData.profile(*columns, output_type=None)` generate structured data quality reports without mutating the input DataFrame.
+- Data structures: `ProfileReport`, `DatasetProfile`, and `ColumnProfile` in `bynat.cleaning.profile` (re-exported in `bynat` and `bynat.cleaning`).
+- Multiple report output formats via `output_type`: `None` or `ProfileReport` (interactive object with attribute and dict access), `dict` (pure JSON-serializable primitives), `pandas.DataFrame` (one summary row per profiled column with `stat_` prefixes), or any `BaseData` subclass.
+- Column kind detection across broad kinds (`numeric`, `categorical`, `boolean`, `datetime`, `other`) with type-specific statistics, missing value analysis via `isna()`, duplicate row detection with `keep="first"` semantics supporting unhashable nested cells (lists/dicts), sample standard deviation, and IQR-based outlier counts.
+- Programmatic conversions: `report.to_dict()` for JSON serialization and `report.to_dataframe()` for tabular quality summaries.
+
 ## 0.6.0
 
 This release moves the cleaning API to a `df.bynat` pandas accessor, splits the implementation into focused modules, routes every external-service method through one cached-lookup engine with injectable providers, and speeds up keyword extraction, outlier detection, and external calls. Review the **Breaking changes** and **Deprecated** sections before upgrading.
