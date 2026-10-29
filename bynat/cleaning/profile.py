@@ -2,6 +2,7 @@
 DataFrame data quality profiling helpers and report data structures.
 """
 
+import datetime
 import math
 from collections.abc import Iterator, Mapping
 from dataclasses import asdict, dataclass, field
@@ -24,8 +25,12 @@ def _clean_scalar(val: Any) -> Any:
     """Convert numpy scalars and floating NaN/inf to native Python types or None."""
     if val is None:
         return None
-    if isinstance(val, (list, dict, set, tuple)):
-        return val
+    if isinstance(val, set):
+        return [_clean_scalar(x) for x in val]
+    if isinstance(val, (list, tuple)):
+        return [_clean_scalar(x) for x in val]
+    if isinstance(val, dict):
+        return {str(k): _clean_scalar(v) for k, v in val.items()}
     if isinstance(val, np.ndarray):
         return val.tolist()
     try:
@@ -33,6 +38,18 @@ def _clean_scalar(val: Any) -> Any:
             return None
     except (ValueError, TypeError):
         pass
+    if isinstance(val, (bool, np.bool_)):
+        return bool(val)
+    if isinstance(val, (pd.Timestamp, np.datetime64, datetime.date)):
+        try:
+            return pd.Timestamp(val).isoformat()
+        except Exception:
+            return str(val)
+    if isinstance(val, (datetime.timedelta, pd.Timedelta, np.timedelta64)):
+        try:
+            return pd.Timedelta(val).isoformat()
+        except Exception:
+            return str(val)
     if isinstance(val, (float, np.floating)):
         f_val = float(val)
         if math.isnan(f_val) or math.isinf(f_val):
@@ -40,13 +57,6 @@ def _clean_scalar(val: Any) -> Any:
         return f_val
     if isinstance(val, (int, np.integer)):
         return int(val)
-    if isinstance(val, (bool, np.bool_)):
-        return bool(val)
-    if isinstance(val, (pd.Timestamp, np.datetime64)):
-        try:
-            return pd.Timestamp(val).isoformat()
-        except Exception:
-            return str(val)
     return val
 
 
