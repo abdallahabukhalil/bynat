@@ -16,7 +16,7 @@ import pandas as pd
 
 from bynat.caching import CacheManager
 
-from . import columns, io, stats, text
+from . import columns, io, profile, stats, text
 from ._common import (  # noqa: F401  (re-exported for `bynat.cleaning.Cleaning` imports)
     _HIERARCHICAL_STATS_COLUMNS,
     _cache_has_value,
@@ -472,6 +472,19 @@ class BaseData(pd.DataFrame):
             *target_cols,
             strategy = strategy,
             hierarchy_cols = hierarchy_cols,
+            output_type = output_type,
+        )
+
+
+    @_shares_doc(profile.profile)
+    def profile(
+        self,
+        *columns: Any,
+        output_type = None,
+    ):
+        return profile.profile(
+            self,
+            *columns,
             output_type = output_type,
         )
 

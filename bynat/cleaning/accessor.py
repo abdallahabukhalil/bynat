@@ -10,7 +10,7 @@ import pandas as pd
 
 from bynat.caching import CacheManager, shared_cache_manager
 
-from . import columns, io, stats, text
+from . import columns, io, profile, stats, text
 from .enrich import currency, geocode, nlp, translate
 
 __all__ = ['BynatAccessor']
@@ -126,6 +126,7 @@ class BynatAccessor:
     drop_outliers = _frame_method(stats.drop_outliers)
     fill_missing = _frame_method(stats.fill_missing)
     get_hierarchical_stats = _frame_method(stats.get_hierarchical_stats)
+    profile = _frame_method(profile.profile)
 
     impute_by_language = _frame_method(translate.impute_by_language)
     translate_conditional_column = _cached_frame_method(translate.translate_conditional_column)
