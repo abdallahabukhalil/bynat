@@ -38,7 +38,7 @@
 
 - **Tidy columns:** rename, drop, reorder, move, and reshape columns, and split list values into separate columns.
 - **Work with text:** extract keywords, truncate text at a delimiter, and categorize rows by reference keywords.
-- **Profile data quality:** assess completeness, duplicate rows, column data types, and type-specific statistics with non-mutating structured reports.
+- **Profile data quality:** check completeness, duplicate rows, column types, and per-type statistics without changing your data.
 - **Handle outliers and gaps:** find outliers and fill missing values by comparing each row with similar rows (grouped by a hierarchy of columns).
 - **Enrich data:** translate values, geocode missing coordinates, convert amounts to USD, and extract entities with spaCy.
 - **Read and write files:** load CSV and JSON files, and save data to JSON or a SQL database.
@@ -167,15 +167,7 @@ The accessor is always called `bynat` (`df.bynat...`), whatever alias you give t
 import bynat                          # registers the df.bynat accessor
 from bynat import ProfileReport, profile, read_csv, read_json
 from bynat.caching import CacheManager, shared_cache_manager
-from bynat.cleaning import (
-    BaseData,
-    ColumnProfile,
-    CsvFile,
-    DatasetProfile,
-    JsonFile,
-    ProfileReport,
-    profile,
-)
+from bynat.cleaning import BaseData, CsvFile, JsonFile
 from bynat.cleaning.enrich import Geocoder, RateSource, Translator
 ```
 
@@ -188,7 +180,7 @@ What each module provides:
 | `bynat.cleaning` | `BaseData`, `JsonFile`, `CsvFile`, `profile`, `ProfileReport`, `DatasetProfile`, `ColumnProfile`, plus `BynatAccessor`, `read_json`, `read_csv` |
 | `bynat.cleaning.enrich` | Provider protocols `Translator`, `Geocoder`, `RateSource`, and their defaults `GoogleTranslatorProvider`, `NominatimGeocoder`, `YFinanceRateSource` |
 
-> **Import submodules explicitly.** The top-level `bynat` namespace exposes `read_json`, `read_csv`, `BynatAccessor`, `profile`, and `ProfileReport`. Import the class API and profiling dataclasses from `bynat.cleaning` and the cache API from `bynat.caching`.
+> **Import submodules explicitly.** The top-level `bynat` namespace exposes only `read_json`, `read_csv`, `BynatAccessor`, `profile`, and `ProfileReport`. Import the class API from `bynat.cleaning` and the cache API from `bynat.caching`.
 
 ### Class-based API and accessor: key differences
 
@@ -254,6 +246,14 @@ labeled = records.bynat.extract_keywords(
 )
 ```
 
+**Profile a DataFrame.** This also uses `records` from the quick start. See [Data profiling](#data-profiling) for the full report:
+
+```python
+report = records.bynat.profile()
+print(report)
+# ProfileReport(rows=2, columns=3, missing=0 (0.0%), duplicate_rows=0)
+```
+
 **Read and write files.** The loader helpers return plain DataFrames:
 
 ```python
@@ -268,6 +268,189 @@ from_csv.bynat.save_to_json("output.json", orient="records")
 ### How the cleaning code is organized
 
 Each function in the `columns`, `text`, `stats`, `enrich`, and `io` modules takes a DataFrame as its first argument and returns a new one by default. The classes and the accessor are thin layers over these functions. See the [module layout](#module-layout).
+
+---
+
+## Data profiling
+
+Profiling gives you a quick quality check of a table before you clean or model it. A profile reports completeness, duplicate rows, memory use, column types, and statistics for each column. It only reads your data. The input DataFrame, its index, and its column names are left unchanged.
+
+```python
+import bynat
+import pandas as pd
+
+df = pd.DataFrame({
+    "customer_id": [1001, 1002, 1003, 1004, 1004],
+    "name": ["Alice", "Bob", "Charlie", "David", "David"],
+    "age": [28.0, 34.0, None, 45.0, 45.0],
+    "active": [True, True, False, True, True],
+    "joined": pd.to_datetime(["2021-01-15", "2022-03-20", "2023-05-12", "2024-07-01", "2024-07-01"]),
+})
+
+report = df.bynat.profile()
+print(report)
+# ProfileReport(rows=5, columns=5, missing=1 (4.0%), duplicate_rows=1)
+
+report.dataset.duplicate_rows        # 1
+report.columns["age"].kind           # "numeric"
+report.columns["age"].missing_count  # 1
+report.columns["age"].stats["mean"]  # 38.0
+```
+
+### Ways to call it
+
+All four forms return the same report:
+
+| Form | Call |
+| --- | --- |
+| pandas accessor | `df.bynat.profile(*columns, output_type=None)` |
+| Class-based API | `BaseData(df).profile(*columns, output_type=None)` |
+| Top-level function | `bynat.profile(df, *columns, output_type=None)` |
+| Cleaning function | `bynat.cleaning.profile(df, *columns, output_type=None)` |
+
+Passing something other than a `pandas.DataFrame` to the function forms raises a `TypeError`.
+
+### Choosing columns
+
+By default, every column is profiled. To profile only some columns, pass their names as separate arguments or as one list, tuple, or set. A set works, but its order is arbitrary.
+
+```python
+df.bynat.profile()                    # all columns
+df.bynat.profile("age", "name")       # names as arguments
+df.bynat.profile(["age", "name"])     # names as one list
+```
+
+A name that is not in the DataFrame raises a `KeyError`.
+
+### Output types
+
+Use `output_type` to choose what you get back:
+
+| `output_type` | Returns | Use it for |
+| --- | --- | --- |
+| `None` (default) or `ProfileReport` | `ProfileReport` | Working with the report in Python. |
+| `dict` | `dict` | Logging or sending the report as JSON. |
+| `pandas.DataFrame` | `pandas.DataFrame` | A table with one row per profiled column. |
+| A `BaseData` subclass | An object of that class | The same table, wrapped in your class. |
+
+Any other value raises a `TypeError`.
+
+```python
+import json
+import pandas as pd
+from bynat.cleaning import BaseData, profile
+
+report = profile(df)                              # ProfileReport
+as_dict = profile(df, output_type=dict)           # plain dictionary
+summary = profile(df, output_type=pd.DataFrame)   # one row per column
+wrapped = profile(df, output_type=BaseData)       # table as BaseData
+
+json_text = json.dumps(as_dict, indent=2)
+```
+
+### Working with a report
+
+A `ProfileReport` has two parts: `report.dataset` (a `DatasetProfile`) and `report.columns` (a dictionary of `ColumnProfile` objects keyed by column name). You can read them as attributes or like a dictionary:
+
+```python
+report.dataset.row_count
+report["dataset"]["row_count"]
+report.columns["age"].missing_proportion
+```
+
+- `report.column_list` is the same set of `ColumnProfile` objects as an ordered list. Use it if your DataFrame has repeated column names, because `report.columns` holds one entry per name.
+- `report.to_dict()` returns the dataset and column profiles as plain Python values.
+- `report.to_dataframe()` returns one row per column. Column statistics become columns with a `stat_` prefix, such as `stat_mean`. A statistic that does not apply to a column's kind is left empty (`NaN`) in that row.
+
+For example, to list columns with missing values or candidate keys:
+
+```python
+with_missing = [c.name for c in report.column_list if c.missing_count > 0]
+candidate_keys = [c.name for c in report.column_list if c.is_unique and c.missing_count == 0]
+
+table = report.to_dataframe()
+table[["column", "kind", "missing_proportion", "distinct_count", "stat_mean"]]
+```
+
+`report.to_dict()` and `profile(..., output_type=dict)` use only plain Python values, with dates written as ISO 8601 strings. They work with `json.dumps` as long as your column names are plain strings or numbers.
+
+### What a report contains
+
+#### Dataset fields
+
+`report.dataset` is a `DatasetProfile`:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `row_count` | `int` | Number of rows. |
+| `column_count` | `int` | Number of profiled columns. |
+| `total_cells` | `int` | `row_count * column_count`. |
+| `missing_count` | `int` | Number of missing cells. |
+| `missing_proportion` | `float` | Missing cells divided by `total_cells`. |
+| `duplicate_rows` | `int` | Number of repeated rows. The first copy of a row is not counted. |
+| `duplicate_proportion` | `float` | `duplicate_rows` divided by `row_count`. |
+| `empty_column_count` | `int` | Number of columns with no non-null values. |
+| `memory_bytes` | `int` | Memory use in bytes, from `memory_usage(deep=True)` (includes the index). `0` for an empty frame. |
+| `dtype_counts` | `dict[str, int]` | Number of columns for each pandas dtype name. |
+
+#### Column fields
+
+Each entry in `report.columns` is a `ColumnProfile`:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `name` | any | The column name. |
+| `dtype` | `str` | The pandas dtype name. |
+| `inferred_type` | `str` | The more specific type pandas infers from the values, such as `integer` or `string`. |
+| `kind` | `str` | The broad group: `numeric`, `categorical`, `boolean`, `datetime`, or `other`. |
+| `count` | `int` | Number of non-null values. |
+| `missing_count` | `int` | Number of missing values. |
+| `missing_proportion` | `float` | Missing values divided by the row count. |
+| `distinct_count` | `int` | Number of different non-null values. |
+| `distinct_proportion` | `float` | `distinct_count` divided by `count`. |
+| `is_unique` | `bool` | `True` when there is at least one non-null value and all of them are different. |
+| `stats` | `dict` | Statistics that depend on `kind`. See below. |
+
+#### Statistics by kind
+
+Every column of the same `kind` has the same keys in `stats`. A value that cannot be computed is `None`, not `NaN`.
+
+| Kind | Keys in `stats` |
+| --- | --- |
+| `numeric` | `min`, `max`, `mean`, `std`, `median`, `q25`, `q75`, `iqr`, `zeros_count`, `zeros_proportion`, `outliers_count` |
+| `categorical` | `top`, `top_frequency`, `top_proportion`, `min_length`, `max_length`, `mean_length` |
+| `boolean` | `true_count`, `false_count`, `true_proportion` |
+| `datetime` | `min`, `max`, `range_days` |
+| `other` | `top`, `top_frequency`, `top_proportion` |
+
+Notes on these statistics:
+
+- **Numeric:** `std` is the sample standard deviation and needs at least 2 non-null values. `outliers_count` counts values below `q25 - 1.5 * iqr` or above `q75 + 1.5 * iqr`, and needs at least 5 non-null values. When there are no non-null values, `zeros_count` is `0`, `zeros_proportion` is `0.0`, and the other statistics are `None`.
+- **Categorical and other:** `top` is the most frequent value, with its count in `top_frequency` and its share of non-null values in `top_proportion`. These are `None` when there are no non-null values.
+- **Categorical lengths:** `min_length`, `max_length`, and `mean_length` are set only when every non-null value is a string. Otherwise they are `None`.
+- **Boolean:** `true_count` and `false_count` are `0` when there are no non-null values, and `true_proportion` is `None`.
+- **Datetime:** `min` and `max` are ISO 8601 strings. `range_days` is the time between them in days, including fractions.
+
+### How columns are classified
+
+bynat assigns each column a `kind`:
+
+| Kind | Columns |
+| --- | --- |
+| `boolean` | Boolean dtypes, including pandas `boolean`, and columns whose values are all booleans. |
+| `datetime` | Datetime dtypes, both naive and timezone-aware, and columns of date or datetime objects. |
+| `numeric` | Numeric dtypes, including pandas `Int64` and `Float64`, and columns of integers, floats, or decimals. |
+| `categorical` | pandas `Categorical`, the `string` dtype, and columns whose non-null values are all strings. |
+| `other` | Everything else, such as mixed types, arbitrary Python objects, and timedeltas. |
+
+Empty and all-null columns do not raise errors. When a column has no non-null values, its `kind` follows its dtype. An all-null `object` column becomes `other`.
+
+### How values are counted
+
+- **Missing values** are found with pandas `isna()`, so `None`, `NaN`, `NaT`, and `pd.NA` all count.
+- **Duplicate rows** are counted across the profiled columns, keeping the first copy of each row. Cells that hold lists or dicts are compared by value. An empty DataFrame, or one with no columns, has `0` duplicates.
+- **Distinct values** exclude nulls. Unhashable values, such as lists and dicts, are compared by value.
+- **Proportions** at the dataset and column level, and `zeros_proportion`, are `0.0` when the denominator is zero. `top_proportion` and `true_proportion` are `None` when there are no non-null values.
 
 ---
 
@@ -412,216 +595,6 @@ as_dict = salaries.bynat.get_hierarchical_stats("salary", hierarchy_cols="countr
 - `dict`: column name to list of values
 - A `BaseData` subclass
 
-### Data quality profiling
-
-`bynat` provides a comprehensive data quality profiling API to evaluate tabular datasets before cleaning, feature engineering, or modeling. Profiling inspects dataset-level completeness, duplicate records, in-memory footprint, data type distributions, and per-column quality metrics and descriptive statistics.
-
-**Non-mutating guarantee:** Profiling is strictly read-only. It never modifies the input DataFrame, its indices, column names, or cell values.
-
-#### Entry points
-
-Profiling is available through four equivalent public entry points:
-
-- **pandas accessor:** `df.bynat.profile(*columns, output_type=None)`
-- **Class-based API:** `BaseData(df).profile(*columns, output_type=None)` (and on `JsonFile`, `CsvFile`)
-- **Top-level function:** `bynat.profile(df, *columns, output_type=None)`
-- **Cleaning module function:** `bynat.cleaning.profile(df, *columns, output_type=None)`
-
-#### Column selection
-
-By default, all columns in the DataFrame are profiled. You can also profile a subset of columns by passing column names as multiple positional arguments or as a sequence (list, tuple, or set):
-
-```python
-# Profile all columns
-report = df.bynat.profile()
-
-# Profile specific columns via multiple arguments
-report = df.bynat.profile("age", "salary")
-
-# Profile specific columns via sequence
-report = df.bynat.profile(["age", "salary"])
-```
-
-Passing a column name that does not exist in the DataFrame raises a `KeyError`. Passing an object other than a `pandas.DataFrame` raises a `TypeError`.
-
-#### Output types
-
-The `output_type` argument determines the format of the returned report:
-
-| `output_type` | Return type | Description |
-| --- | --- | --- |
-| `None` (default) or `ProfileReport` | `ProfileReport` | Rich report object supporting attribute access (`report.dataset`, `report.columns`), dictionary access (`report["dataset"]`), iteration, string `repr`, and export methods (`to_dict()`, `to_dataframe()`). |
-| `dict` | `dict[str, Any]` | Nested pure Python dictionary composed exclusively of JSON-serializable primitives (native scalars, lists, and dicts). Directly serializable with `json.dumps`. |
-| `pandas.DataFrame` | `pandas.DataFrame` | Tabular summary DataFrame containing one row per profiled column with core quality metrics and type-specific statistics prefixed with `stat_`. |
-| `BaseData` subclass | Caller's class | Tabular summary DataFrame wrapped in the specified `BaseData` subclass. |
-
-```python
-import json
-import pandas as pd
-from bynat.cleaning import BaseData, ProfileReport, profile
-
-# 1. Default ProfileReport object
-report = profile(df)
-
-# 2. Pure dictionary for API payloads or JSON logging
-data_dict = profile(df, output_type=dict)
-json_str = json.dumps(data_dict, indent=2)
-
-# 3. Tabular summary DataFrame
-summary_df = profile(df, output_type=pd.DataFrame)
-
-# 4. BaseData subclass wrapper
-summary_bd = profile(df, output_type=BaseData)
-```
-
-#### Practical examples
-
-**Generating and inspecting a report programmatically:**
-
-```python
-import bynat
-import pandas as pd
-
-df = pd.DataFrame({
-    "customer_id": [1001, 1002, 1003, 1004, 1004],
-    "name": ["Alice", "Bob", "Charlie", "David", "David"],
-    "age": [28.0, 34.0, None, 45.0, 45.0],
-    "active": [True, True, False, True, True],
-    "joined": pd.to_datetime(["2021-01-15", "2022-03-20", "2023-05-12", "2024-07-01", "2024-07-01"]),
-})
-
-report = df.bynat.profile()
-
-# Inspect dataset-level metrics
-print(f"Dataset shape: {report.dataset.row_count} rows x {report.dataset.column_count} columns")
-print(f"Missing cells: {report.dataset.missing_count} ({report.dataset.missing_proportion:.1%})")
-print(f"Duplicate rows: {report.dataset.duplicate_rows} ({report.dataset.duplicate_proportion:.1%})")
-print(f"Memory: {report.dataset.memory_bytes} bytes")
-print(f"Data types: {report.dataset.dtype_counts}")
-
-# Inspect column-level quality metrics
-age_col = report.columns["age"]
-print(f"Column '{age_col.name}' ({age_col.dtype}, kind: {age_col.kind}):")
-print(f"  Valid count: {age_col.count}, Missing: {age_col.missing_count} ({age_col.missing_proportion:.1%})")
-print(f"  Distinct: {age_col.distinct_count} ({age_col.distinct_proportion:.1%}), Unique: {age_col.is_unique}")
-print(f"  Mean: {age_col.stats['mean']}, Median: {age_col.stats['median']}, Outliers: {age_col.stats['outliers_count']}")
-```
-
-**Filtering columns by quality thresholds:**
-
-```python
-# Identify columns with missing values
-columns_with_missing = [
-    col.name for col in report.columns.values()
-    if col.missing_proportion > 0.0
-]
-
-# Identify potential key/identifier columns (fully unique, non-null)
-candidate_keys = [
-    col.name for col in report.columns.values()
-    if col.is_unique and col.missing_count == 0
-]
-```
-
-**Tabular conversion and JSON serialization:**
-
-```python
-import json
-
-# Convert column metrics into a tabular DataFrame for display or export
-summary_table = report.to_dataframe()
-print(summary_table[["column", "kind", "missing_proportion", "distinct_count", "stat_mean"]])
-
-# Serialize full profile to a valid JSON string
-json_export = json.dumps(report.to_dict(), indent=2)
-```
-
-#### Report structure
-
-The profiling report consists of aggregate dataset metrics (`DatasetProfile`) and detailed per-column profiles (`ColumnProfile`).
-
-##### DatasetProfile fields
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `row_count` | `int` | Total number of rows in the DataFrame. |
-| `column_count` | `int` | Total number of profiled columns. |
-| `total_cells` | `int` | Total number of cells (`row_count * column_count`). |
-| `missing_count` | `int` | Total count of missing (`isna()`) cells across all profiled columns. |
-| `missing_proportion` | `float` | Proportion of cells that are missing (`0.0` when `total_cells == 0`). |
-| `duplicate_rows` | `int` | Count of duplicate rows using `DataFrame.duplicated(keep="first")` semantics. |
-| `duplicate_proportion` | `float` | Proportion of rows that are duplicates (`0.0` when `row_count == 0`). |
-| `empty_column_count` | `int` | Number of profiled columns containing zero non-null values. |
-| `memory_bytes` | `int` | Total estimated memory consumption of the DataFrame in bytes (`deep=True`). |
-| `dtype_counts` | `dict[str, int]` | Frequency mapping of pandas data type strings across profiled columns. |
-
-##### ColumnProfile fields
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `name` | `Any` | Column label or identifier. |
-| `dtype` | `str` | Pandas data type string representation (e.g. `'int64'`, `'float64'`, `'category'`). |
-| `inferred_type` | `str` | Fine-grained type detected by pandas (e.g. `'integer'`, `'floating'`, `'string'`). |
-| `kind` | `str` | Broad classification: `'numeric'`, `'categorical'`, `'boolean'`, `'datetime'`, or `'other'`. |
-| `count` | `int` | Count of valid non-null values. |
-| `missing_count` | `int` | Count of missing (`isna()`) values. |
-| `missing_proportion` | `float` | Proportion of column values that are missing (`0.0` when `row_count == 0`). |
-| `distinct_count` | `int` | Count of distinct non-null values. |
-| `distinct_proportion` | `float` | Proportion of non-null values that are distinct (`0.0` when `count == 0`). |
-| `is_unique` | `bool` | `True` if every non-null value is distinct and `count > 0`; otherwise `False`. |
-| `stats` | `dict[str, Any]` | Mapping of descriptive statistics specific to the column's `kind`. |
-
-##### Per-kind statistics keys
-
-Every column of a given `kind` contains the exact same set of keys in its `stats` mapping. Unavailable or inapplicable metrics are represented as `None` (never `NaN`, `inf`, or omitted keys).
-
-| Kind | Key | Type | Description |
-| --- | --- | --- | --- |
-| `numeric` | `min` | `float \| int \| None` | Minimum value in the column (`None` if empty). |
-| `numeric` | `max` | `float \| int \| None` | Maximum value in the column (`None` if empty). |
-| `numeric` | `mean` | `float \| None` | Arithmetic mean of non-null values (`None` if empty). |
-| `numeric` | `std` | `float \| None` | Sample standard deviation (`None` if fewer than 2 non-null values). |
-| `numeric` | `median` | `float \| int \| None` | 50th percentile (median) value (`None` if empty). |
-| `numeric` | `q25` | `float \| int \| None` | 25th percentile (first quartile) value (`None` if empty). |
-| `numeric` | `q75` | `float \| int \| None` | 75th percentile (third quartile) value (`None` if empty). |
-| `numeric` | `iqr` | `float \| None` | Interquartile range (`q75 - q25`, `None` if empty). |
-| `numeric` | `zeros_count` | `int` | Count of values equal to 0. |
-| `numeric` | `zeros_proportion` | `float` | Proportion of non-null values equal to 0 (`0.0` when empty). |
-| `numeric` | `outliers_count` | `int \| None` | Count of values outside `[q25 - 1.5*iqr, q75 + 1.5*iqr]` (`None` if fewer than 5 non-null values). |
-| `categorical` | `top` | `Any` | Most frequently occurring non-null value (`None` if empty). |
-| `categorical` | `top_frequency` | `int \| None` | Number of occurrences of the top value (`None` if empty). |
-| `categorical` | `top_proportion` | `float \| None` | Proportion of non-null values matching the top value (`None` if empty). |
-| `categorical` | `min_length` | `int \| None` | Shortest string length among values (`None` if non-string or empty). |
-| `categorical` | `max_length` | `int \| None` | Longest string length among values (`None` if non-string or empty). |
-| `categorical` | `mean_length` | `float \| None` | Average string length across values (`None` if non-string or empty). |
-| `boolean` | `true_count` | `int` | Number of `True` values (`0` if empty). |
-| `boolean` | `false_count` | `int` | Number of `False` values (`0` if empty). |
-| `boolean` | `true_proportion` | `float \| None` | Proportion of `True` among non-null values (`None` if empty). |
-| `datetime` | `min` | `str \| None` | Earliest timestamp formatted as an ISO 8601 string (`None` if empty). |
-| `datetime` | `max` | `str \| None` | Latest timestamp formatted as an ISO 8601 string (`None` if empty). |
-| `datetime` | `range_days` | `float \| None` | Elapsed duration between `min` and `max` in fractional days (`None` if empty). |
-| `other` | `top` | `Any` | Most frequently occurring non-null value (`None` if empty). |
-| `other` | `top_frequency` | `int \| None` | Number of occurrences of the top value (`None` if empty). |
-| `other` | `top_proportion` | `float \| None` | Proportion of non-null values matching the top value (`None` if empty). |
-
-#### Metric definitions and counting semantics
-
-- **Missing values:** Detected using pandas `isna()`, identifying `None`, `numpy.nan`, and `pandas.NA`.
-- **Duplicate rows:** Evaluated using `DataFrame.duplicated(keep="first")` semantics. The first occurrence of each unique row is retained; every subsequent identical row increments `duplicate_rows`. For DataFrames with unhashable cell values (such as nested `list` or `dict` objects), rows are compared by value via `_dedupe_key`.
-- **Distinct count:** Counts distinct non-null values (`nunique(dropna=True)`). Unhashable values are compared by value via `_dedupe_key`.
-- **Outlier detection:** Computed using Tukey's 1.5*IQR method. Values below `q25 - 1.5 * iqr` or above `q75 + 1.5 * iqr` are counted as outliers. Outlier detection requires at least 5 non-null observations (`count >= 5`); when fewer observations exist, `outliers_count` is set to `None`.
-- **Sample standard deviation:** Calculated as sample standard deviation (Bessel-corrected, `ddof=1`). Requires at least 2 non-null observations (`count >= 2`); otherwise `std` is `None`.
-- **Zero-denominator proportions:** Any proportion with a zero denominator (such as `missing_proportion` on an empty DataFrame, or `zeros_proportion` on an empty column) evaluates to `0.0`.
-- **`None` convention:** Inapplicable or unavailable metrics are always represented as `None` rather than `float('nan')`, `float('inf')`, or omitted keys. The schema of the `stats` dictionary is guaranteed invariant for each `kind`.
-
-#### Supported data types and classification
-
-- **Nullable pandas dtypes:** Fully compatible with pandas nullable extensions (`Int64`, `Float64`, `boolean`, `string`).
-- **Categoricals:** `pandas.Categorical` and categorical series are classified as kind `'categorical'`.
-- **Datetimes and timedeltas:** Supports naive datetimes, timezone-aware datetimes (`datetime64[ns, tz]`), pandas `Timestamp`, and timedeltas.
-- **Mixed and object columns:** Columns containing mixed scalar types (e.g. integers mixed with text strings) or unstructured Python objects are classified as kind `'other'`.
-- **Empty and all-null columns:** Handled gracefully without raising exceptions. When a column has an explicit dtype (e.g. `pd.Series([], dtype="int64")`), kind detection selects the kind corresponding to the declared dtype. Untyped or empty object columns default to kind `'other'`.
-
 ### Enrichment with external services
 
 Translation, geocoding, and currency conversion call external services, so use an appropriate cache directory and any service credentials or configuration that apply.
@@ -692,7 +665,7 @@ The accessor and the supported classes expose the same cleaning methods.
 
 - Accessor methods take no `inplace` argument.
 - Class methods accept `inplace` where in-place operation is meaningful.
-- `get_hierarchical_stats` and `profile` return reports or statistics and have no in-place mode.
+- `get_hierarchical_stats` and `profile` return statistics or reports and have no in-place mode.
 
 > **Always use the method's return value.** Most methods skip missing source or target columns with a logged warning and return an unchanged copy. Invalid arguments that would otherwise give silently wrong results raise instead: an unknown `strategy`, an empty `file_path`, invalid `save_to_sql` connection settings, or an unusable `extract_entities_nlp` configuration.
 
@@ -702,6 +675,7 @@ Methods are grouped by the kind of job they do:
 - [Text and language](#text-and-language)
 - [Enrichment](#enrichment)
 - [Outliers, missing values, and statistics](#outliers-missing-values-and-statistics)
+- [Data profiling](#data-profiling-1)
 - [Saving data](#saving-data)
 - [Cache and object helpers](#cache-and-object-helpers)
 
@@ -781,7 +755,6 @@ Translation, geocoding, currency conversion, and NLP. See [Enrichment with exter
 | `drop_outliers` | `*target_cols`, keyword-only `hierarchy_cols`, `min_samples=5`, `get_hierarchical_stats=False` | Drops rows that contain hierarchical-IQR outliers. Rows are dropped by position, so duplicated index labels are safe. |
 | `fill_missing` | `*target_cols`, `strategy="median"`, `hierarchy_cols=None`, `get_hierarchical_stats=False` | Fills missing values step by step through a grouping hierarchy, using `median`, `mean`, `mode`, or the alias `mod`. |
 | `get_hierarchical_stats` | `*target_cols`, `strategy="median"`, `hierarchy_cols=None`, `output_type=None` | Returns one statistic row per group, hierarchy level, target, and strategy. See [Hierarchical statistics](#hierarchical-statistics) for the output schema and `output_type` values. |
-| `profile` | `*columns`, keyword-only `output_type=None` | Generates a structured data quality profile report covering dataset summary metrics, column types, completeness, uniqueness, and kind-specific statistics. |
 
 #### Returning statistics from cleaning methods
 
@@ -790,6 +763,12 @@ For `handle_outliers`, `drop_outliers`, and `fill_missing`, passing `get_hierarc
 - The return value is `(result, stats)`.
 - With `inplace=True`, the operation changes the original object and returns `stats` directly.
 - The outlier methods use the default hierarchical `median` statistic. `fill_missing` uses its requested `strategy`.
+
+### Data profiling
+
+| Method | Parameters | Purpose |
+| --- | --- | --- |
+| `profile` | `*columns`, keyword-only `output_type=None` | Returns a read-only data quality report for all columns or the ones you name. See [Data profiling](#data-profiling) for the report structure and `output_type` values. |
 
 ### Saving data
 
