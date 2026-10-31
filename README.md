@@ -1,18 +1,74 @@
-# bynat
+<h1 align="center">
+  <picture>
+    <source
+      media="(prefers-color-scheme: dark)"
+      srcset="./assets/Full%20Logo/logo-dark.svg">
+    <img
+      alt="bynat"
+      src="./assets/Full%20Logo/logo.svg"
+      width="320">
+  </picture>
+</h1>
 
-`bynat` is a Python utility package for tabular-data cleaning and small SQLite-backed caches. Its first-class cleaning API is class-based through `BaseData`, `JsonFile`, and `CsvFile`; the optional `df.bynat` accessor provides a complementary interface for ordinary `pandas.DataFrame` objects. The caching API stores per-function dictionaries in a SQLite database.
+<p align="center">
+  <strong>A Python toolkit for simplifying data workflows.</strong><br><br>
+</p>
 
-## Status
+<div align="center">
+  Python <code>&gt;=3.11</code> &nbsp;·&nbsp; MIT license &nbsp;·&nbsp; version <code>0.6.0</code>
 
-Version `0.6.0` is the project version declared in `pyproject.toml`. See [CHANGELOG.md](CHANGELOG.md) for behavior changes since `0.1.1` and [ROADMAP.md](./docs/ROADMAP.md) for planned work.
+  [Overview](#what-is-bynat) ·
+  [Installation](#installation) ·
+  [Quick start](#quick-start) ·
+  [Usage](#using-bynat) ·
+  [Advanced](#advanced-features) ·
+  [Reference](#cleaning-method-reference) ·
+  [Notes](#limitations-and-operational-notes) ·
+  [Development](#development-and-verification)
+
+</div>
+
+---
+
+## What is bynat?
+
+`bynat` is a Python toolkit for the small, fiddly jobs around tabular data. It works on pandas `DataFrame` objects (a `DataFrame` is pandas' name for a table of rows and columns) and includes SQLite-backed caching, so slow lookups are not repeated.
+
+### What you can do with it
+
+- **Tidy columns:** rename, drop, reorder, move, and reshape columns, and split list values into separate columns.
+- **Work with text:** extract keywords, truncate text at a delimiter, and categorize rows by reference keywords.
+- **Profile data quality:** check completeness, duplicate rows, column types, and per-type statistics without changing your data.
+- **Handle outliers and gaps:** find outliers and fill missing values by comparing each row with similar rows (grouped by a hierarchy of columns).
+- **Enrich data:** translate values, geocode missing coordinates, convert amounts to USD, and extract entities with spaCy.
+- **Read and write files:** load CSV and JSON files, and save data to JSON or a SQL database.
+- **Cache results:** store lookup results in a SQLite database and reuse them between runs.
+
+### Ways to use it
+
+You can mix these styles in the same project:
+
+- **Class-based API:** `BaseData`, `JsonFile`, and `CsvFile`. This is the primary API.
+- **pandas accessor:** the optional `df.bynat` accessor adds the same cleaning operations to ordinary `pandas.DataFrame` objects.
+- **Caching API:** `CacheManager` stores per-function dictionaries in a SQLite database.
+
+New here? [Install bynat](#installation), then go to the [Quick start](#quick-start).
+
+### Project status
+
+`0.6.0` is the version declared in `pyproject.toml`. See [CHANGELOG.md](CHANGELOG.md) for behavior changes since `0.1.1`, and [ROADMAP.md](./docs/ROADMAP.md) for planned work.
+
+---
 
 ## Installation
+
+Install from PyPI:
 
 ```bash
 python -m pip install bynat
 ```
 
-For a checkout, install it in editable mode:
+To work from a repository checkout, install in editable mode:
 
 ```bash
 python -m pip install -e .
@@ -20,62 +76,407 @@ python -m pip install -e .
 
 ### Requirements
 
-- Python `>=3.11`.
-- Mandatory runtime distributions: `numpy` and `pandas`.
-- Optional integrations are grouped in `pyproject.toml`:
-  - `translation`: `deep-translator`, `langdetect`
-  - `geocoding`: `geopy`
-  - `currency`: `Babel`, `pycountry`, `yfinance`
-  - `categorization`: `pyahocorasick` for the `ahocorasick` import
-  - `nlp`: `spacy`
-  - `sql`: `SQLAlchemy`
+- Python `>=3.11`
+- Required packages: `numpy` and `pandas`
 
-Install an integration group when needed, for example:
+### Optional integrations
+
+Features that call outside libraries are grouped into optional extras in `pyproject.toml`:
+
+| Extra | Installs | Used for |
+| --- | --- | --- |
+| `translation` | `deep-translator`, `langdetect` | Translation and language detection |
+| `geocoding` | `geopy` | Geocoding |
+| `currency` | `Babel`, `pycountry`, `yfinance` | Currency conversion |
+| `categorization` | `pyahocorasick` (imported as `ahocorasick`) | Keyword matching |
+| `nlp` | `spacy` | Entity extraction |
+| `sql` | `SQLAlchemy` | Saving to SQL |
+
+Install an extra when you need it:
 
 ```bash
 python -m pip install "bynat[translation]"
 ```
 
-These integrations are imported only when their methods are used. Basic imports and core dataframe operations do not require them. Calling a method that needs a missing integration raises an `ImportError` naming the required optional dependency. Install the extra corresponding to the feature you use.
+Optional integrations are imported only when a method uses them. Basic imports and core DataFrame operations work without them. If a method needs a missing integration, it raises an `ImportError` that names the extra to install.
 
-`extract_entities_nlp` also needs a compatible spaCy model, defaulting to `en_core_web_sm`. `save_to_sql` needs the DBAPI driver required by the SQLAlchemy URL. Neither model files nor database drivers are bundled.
+> **Not bundled:** `extract_entities_nlp` also needs a compatible spaCy model (default: `en_core_web_sm`), and `save_to_sql` needs the database driver required by your SQLAlchemy URL. Neither model files nor database drivers are included.
 
+---
 
-## Public API
+## Quick start
+
+`import bynat` registers the `df.bynat` accessor on every `pandas.DataFrame`.
+
+```python
+import bynat
+import pandas as pd
+
+records = pd.DataFrame({
+    "user.display_name": ["Ada", "Grace"],
+    "user_id": [1, 2],
+    "description": ["Blue shoes", "Red shirt"],
+})
+
+cleaned = records.bynat.rename_all_DOTS().bynat.drop_by_substring("user")
+```
+
+This takes two steps:
+
+1. `rename_all_DOTS` replaces dots in column names (with `_` by default).
+2. `drop_by_substring("user")` drops every column whose name contains `user`.
+
+Only the `description` column is left.
+
+Prefer a class over the accessor? `BaseData` is a `pandas.DataFrame` subclass that does the same cleanup:
+
+```python
+from bynat.cleaning import BaseData
+
+cleaned = BaseData(records).rename_all_DOTS().drop_by_substring("user")
+```
+
+Both versions return a new object and leave `records` unchanged. Accessor methods always return new DataFrames. Class methods also return a new object by default.
+
+---
+
+## Using bynat
+
+bynat has two parts that work together:
+
+- **Cleaning** (`bynat.cleaning`): column, text, statistics, enrichment, and file methods.
+- **Caching** (`bynat.caching`): SQLite-backed storage for lookup results.
+
+Cleaning methods that call outside services (translation, geocoding, NLP extraction, and exchange-rate lookup) use a shared `CacheManager`. See [Caching](#caching).
+
+### Import styles
+
+There are three supported ways to import bynat. None is required; use whichever reads best in your code.
+
+| Style | Example | Good when |
+| --- | --- | --- |
+| Module imports | `import bynat.cleaning as cl`<br>`import bynat.caching as ch` | You prefer a module namespace, such as `cl.BaseData` or `ch.CacheManager`. |
+| Direct imports | `from bynat.cleaning import BaseData` | You want specific objects under their own names. |
+| pandas accessor | `import pandas as pd`<br>`import bynat as by` | You already have a plain `DataFrame` and want to call `df.bynat.<method>(...)`. |
+
+The accessor is always called `bynat` (`df.bynat...`), whatever alias you give the module. Importing `bynat` or any of its submodules registers it.
+
+#### Supported imports
 
 ```python
 import bynat                          # registers the df.bynat accessor
-from bynat import read_csv, read_json
+from bynat import ProfileReport, profile, read_csv, read_json
 from bynat.caching import CacheManager, shared_cache_manager
 from bynat.cleaning import BaseData, CsvFile, JsonFile
 from bynat.cleaning.enrich import Geocoder, RateSource, Translator
 ```
 
-- `bynat`: `read_json`, `read_csv`, `BynatAccessor`. Importing `bynat` (or any submodule) registers the `bynat` accessor on `pandas.DataFrame`.
-- `bynat.caching`: `CacheManager`, `shared_cache_manager`, `CACHE_DIR_ENV_VAR`, `DEFAULT_CACHE_DIR`
-- `bynat.cleaning`: `BynatAccessor`, `read_json`, `read_csv`, and the supported `BaseData`, `JsonFile`, `CsvFile` classes
-- `bynat.cleaning.enrich`: the provider protocols `Translator`, `Geocoder`, `RateSource` and their defaults `GoogleTranslatorProvider`, `NominatimGeocoder`, `YFinanceRateSource`
+What each module provides:
 
-### Module layout
-
-| Module | Contents |
+| Module | Public objects |
 | --- | --- |
-| `bynat.caching.manager` | `CacheManager` and `shared_cache_manager` |
-| `bynat.cleaning.columns` | Column renaming, dropping, reordering, moving, `melt_transform_pivot`, `split_list_objects` |
-| `bynat.cleaning.text` | `extract_keywords`, `truncate_after_substring`, `categorize_by_reference` |
-| `bynat.cleaning.stats` | `handle_outliers`, `drop_outliers`, `fill_missing`, `get_hierarchical_stats` |
-| `bynat.cleaning.enrich` | `translate`, `geocode`, `currency`, `nlp`, the shared cached-lookup `engine`, and `providers` |
-| `bynat.cleaning.io` | `save_to_json`, `save_to_sql`, `read_json`, `read_csv` |
-| `bynat.cleaning.accessor` | The `df.bynat` accessor |
-| `bynat.cleaning.base` | The supported `BaseData`, `JsonFile`, `CsvFile` classes |
+| `bynat` | `read_json`, `read_csv`, `BynatAccessor`, `profile`, `ProfileReport` |
+| `bynat.caching` | `CacheManager`, `shared_cache_manager`, `CACHE_DIR_ENV_VAR`, `DEFAULT_CACHE_DIR` |
+| `bynat.cleaning` | `BaseData`, `JsonFile`, `CsvFile`, `profile`, `ProfileReport`, `DatasetProfile`, `ColumnProfile`, plus `BynatAccessor`, `read_json`, `read_csv` |
+| `bynat.cleaning.enrich` | Provider protocols `Translator`, `Geocoder`, `RateSource`, and their defaults `GoogleTranslatorProvider`, `NominatimGeocoder`, `YFinanceRateSource` |
 
-Each function in `columns`, `text`, `stats`, `enrich`, and `io` takes the DataFrame as its first argument and returns a new one by default; the supported classes and optional accessor are thin layers over them. The legacy module paths `bynat.caching.Caching` and `bynat.cleaning.Cleaning` still import and resolve to `bynat.caching.manager` and `bynat.cleaning.base`.
+> **Import submodules explicitly.** The top-level `bynat` namespace exposes only `read_json`, `read_csv`, `BynatAccessor`, `profile`, and `ProfileReport`. Import the class API from `bynat.cleaning` and the cache API from `bynat.caching`.
+
+### Class-based API and accessor: key differences
+
+| | Class-based API | pandas accessor |
+| --- | --- | --- |
+| Works on | `BaseData`, `JsonFile`, `CsvFile` | Any `pandas.DataFrame` |
+| Return value | A new object by default | Always a new DataFrame |
+| `inplace` argument | Accepted where in-place operation is meaningful | Not accepted |
+| Cache directory | `cache_dir` constructor argument | `df.bynat.with_cache(...)` |
+
+### The class-based API
+
+`BaseData`, `JsonFile`, and `CsvFile` are supported public classes. `BaseData` is a `pandas.DataFrame` subclass. All three use the same cleaning code as the accessor.
+
+| Class | Constructor parameters | Equivalent accessor or function form |
+| --- | --- | --- |
+| `BaseData` | `data=None`, `cache_dir=None`, `*args`, `**kwargs` | `pandas.DataFrame(...)` with `df.bynat`; use `df.bynat.with_cache(cache_dir)` to set a cache directory |
+| `JsonFile` | `data=None`, `json_file_path=None`, `key=None`, `cache_dir=None`, `*args`, `**kwargs` | `bynat.read_json(json_file_path, key=None)`, then `df.bynat` methods |
+| `CsvFile` | `data=None`, `csv_file_path=None`, `cache_dir=None`, `read_kwargs=None`, `*args`, `**kwargs` | `bynat.read_csv(csv_file_path, **read_kwargs)`, then `df.bynat` methods |
+
+How `inplace` works:
+
+- Every `BaseData` method in the [method reference](#cleaning-method-reference) accepts `inplace=False` where in-place operation is meaningful.
+- With `inplace=True`, the method changes the original object and returns `None` (or the documented statistics result). This is supported and is not scheduled for removal.
+- Without it, every method returns a new object, including early exits that previously returned the original object.
+
+`BaseData` creates its `CacheManager` on first use and shares it with every frame pandas derives from it.
+
+### The pandas accessor
+
+The accessor is an optional extra way to use bynat on ordinary DataFrames. It does not replace the class-based API. It exposes the same cleaning operations through `df.bynat`.
+
+- Accessor methods return new DataFrames and do not accept `inplace`.
+- `df.bynat.with_cache(...)` returns an accessor that caches in another directory or in an explicit `CacheManager`.
+- `bynat.read_csv` and `bynat.read_json` return plain DataFrames that you can use the accessor on right away.
+
+### The same job in both styles
+
+```python
+# Class-based style
+from bynat.cleaning import JsonFile
+jobs = JsonFile(json_file_path="jobs.json", key="items", cache_dir="cache")
+jobs = jobs.rename_all_DOTS()
+jobs.translate_categorical_column("status", inplace=True)
+
+# Accessor style
+import bynat
+jobs = bynat.read_json("jobs.json", key="items")
+jobs = jobs.bynat.rename_all_DOTS()
+jobs = jobs.bynat.with_cache("cache").translate_categorical_column("status")
+```
+
+The class-based version uses `JsonFile` and changes the object in place with `inplace=True`. The accessor version works on a plain DataFrame and reassigns the result.
+
+### Common tasks
+
+**Extract keywords from text.** This continues with the `records` DataFrame from the quick start:
+
+```python
+labeled = records.bynat.extract_keywords(
+    "description",
+    colors=["blue", "red"],
+)
+```
+
+**Profile a DataFrame.** This also uses `records` from the quick start. See [Data profiling](#data-profiling) for the full report:
+
+```python
+report = records.bynat.profile()
+print(report)
+# ProfileReport(rows=2, columns=3, missing=0 (0.0%), duplicate_rows=0)
+```
+
+**Read and write files.** The loader helpers return plain DataFrames:
+
+```python
+import bynat
+
+from_csv = bynat.read_csv("input.csv", sep=";")
+from_json = bynat.read_json("input.json", key="items")
+
+from_csv.bynat.save_to_json("output.json", orient="records")
+```
+
+### How the cleaning code is organized
+
+Each function in the `columns`, `text`, `stats`, `enrich`, and `io` modules takes a DataFrame as its first argument and returns a new one by default. The classes and the accessor are thin layers over these functions. See the [module layout](#module-layout).
+
+---
+
+## Data profiling
+
+Profiling gives you a quick quality check of a table before you clean or model it. A profile reports completeness, duplicate rows, memory use, column types, and statistics for each column. It only reads your data. The input DataFrame, its index, and its column names are left unchanged.
+
+```python
+import bynat
+import pandas as pd
+
+df = pd.DataFrame({
+    "customer_id": [1001, 1002, 1003, 1004, 1004],
+    "name": ["Alice", "Bob", "Charlie", "David", "David"],
+    "age": [28.0, 34.0, None, 45.0, 45.0],
+    "active": [True, True, False, True, True],
+    "joined": pd.to_datetime(["2021-01-15", "2022-03-20", "2023-05-12", "2024-07-01", "2024-07-01"]),
+})
+
+report = df.bynat.profile()
+print(report)
+# ProfileReport(rows=5, columns=5, missing=1 (4.0%), duplicate_rows=1)
+
+report.dataset.duplicate_rows        # 1
+report.columns["age"].kind           # "numeric"
+report.columns["age"].missing_count  # 1
+report.columns["age"].stats["mean"]  # 38.0
+```
+
+### Ways to call it
+
+All four forms return the same report:
+
+| Form | Call |
+| --- | --- |
+| pandas accessor | `df.bynat.profile(*columns, output_type=None)` |
+| Class-based API | `BaseData(df).profile(*columns, output_type=None)` |
+| Top-level function | `bynat.profile(df, *columns, output_type=None)` |
+| Cleaning function | `bynat.cleaning.profile(df, *columns, output_type=None)` |
+
+Passing something other than a `pandas.DataFrame` to the function forms raises a `TypeError`.
+
+### Choosing columns
+
+By default, every column is profiled. To profile only some columns, pass their names as separate arguments or as one list, tuple, or set. A set works, but its order is arbitrary.
+
+```python
+df.bynat.profile()                    # all columns
+df.bynat.profile("age", "name")       # names as arguments
+df.bynat.profile(["age", "name"])     # names as one list
+```
+
+A name that is not in the DataFrame raises a `KeyError`.
+
+### Output types
+
+Use `output_type` to choose what you get back:
+
+| `output_type` | Returns | Use it for |
+| --- | --- | --- |
+| `None` (default) or `ProfileReport` | `ProfileReport` | Working with the report in Python. |
+| `dict` | `dict` | Logging or sending the report as JSON. |
+| `pandas.DataFrame` | `pandas.DataFrame` | A table with one row per profiled column. |
+| A `BaseData` subclass | An object of that class | The same table, wrapped in your class. |
+
+Any other value raises a `TypeError`.
+
+```python
+import json
+import pandas as pd
+from bynat.cleaning import BaseData, profile
+
+report = profile(df)                              # ProfileReport
+as_dict = profile(df, output_type=dict)           # plain dictionary
+summary = profile(df, output_type=pd.DataFrame)   # one row per column
+wrapped = profile(df, output_type=BaseData)       # table as BaseData
+
+json_text = json.dumps(as_dict, indent=2)
+```
+
+### Working with a report
+
+A `ProfileReport` has two parts: `report.dataset` (a `DatasetProfile`) and `report.columns` (a dictionary of `ColumnProfile` objects keyed by column name). You can read them as attributes or like a dictionary:
+
+```python
+report.dataset.row_count
+report["dataset"]["row_count"]
+report.columns["age"].missing_proportion
+```
+
+- `report.column_list` is the same set of `ColumnProfile` objects as an ordered list. Use it if your DataFrame has repeated column names, because `report.columns` holds one entry per name.
+- `report.to_dict()` returns the dataset and column profiles as plain Python values.
+- `report.to_dataframe()` returns one row per column. Column statistics become columns with a `stat_` prefix, such as `stat_mean`. A statistic that does not apply to a column's kind is left empty (`NaN`) in that row.
+
+For example, to list columns with missing values or candidate keys:
+
+```python
+with_missing = [c.name for c in report.column_list if c.missing_count > 0]
+candidate_keys = [c.name for c in report.column_list if c.is_unique and c.missing_count == 0]
+
+table = report.to_dataframe()
+table[["column", "kind", "missing_proportion", "distinct_count", "stat_mean"]]
+```
+
+`report.to_dict()` and `profile(..., output_type=dict)` use only plain Python values, with dates written as ISO 8601 strings. They work with `json.dumps` as long as your column names are plain strings or numbers.
+
+### What a report contains
+
+#### Dataset fields
+
+`report.dataset` is a `DatasetProfile`:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `row_count` | `int` | Number of rows. |
+| `column_count` | `int` | Number of profiled columns. |
+| `total_cells` | `int` | `row_count * column_count`. |
+| `missing_count` | `int` | Number of missing cells. |
+| `missing_proportion` | `float` | Missing cells divided by `total_cells`. |
+| `duplicate_rows` | `int` | Number of repeated rows. The first copy of a row is not counted. |
+| `duplicate_proportion` | `float` | `duplicate_rows` divided by `row_count`. |
+| `empty_column_count` | `int` | Number of columns with no non-null values. |
+| `memory_bytes` | `int` | Memory use in bytes, from `memory_usage(deep=True)` (includes the index). `0` for an empty frame. |
+| `dtype_counts` | `dict[str, int]` | Number of columns for each pandas dtype name. |
+
+#### Column fields
+
+Each entry in `report.columns` is a `ColumnProfile`:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `name` | any | The column name. |
+| `dtype` | `str` | The pandas dtype name. |
+| `inferred_type` | `str` | The more specific type pandas infers from the values, such as `integer` or `string`. |
+| `kind` | `str` | The broad group: `numeric`, `categorical`, `boolean`, `datetime`, or `other`. |
+| `count` | `int` | Number of non-null values. |
+| `missing_count` | `int` | Number of missing values. |
+| `missing_proportion` | `float` | Missing values divided by the row count. |
+| `distinct_count` | `int` | Number of different non-null values. |
+| `distinct_proportion` | `float` | `distinct_count` divided by `count`. |
+| `is_unique` | `bool` | `True` when there is at least one non-null value and all of them are different. |
+| `stats` | `dict` | Statistics that depend on `kind`. See below. |
+
+#### Statistics by kind
+
+Every column of the same `kind` has the same keys in `stats`. A value that cannot be computed is `None`, not `NaN`.
+
+| Kind | Keys in `stats` |
+| --- | --- |
+| `numeric` | `min`, `max`, `mean`, `std`, `median`, `q25`, `q75`, `iqr`, `zeros_count`, `zeros_proportion`, `outliers_count` |
+| `categorical` | `top`, `top_frequency`, `top_proportion`, `min_length`, `max_length`, `mean_length` |
+| `boolean` | `true_count`, `false_count`, `true_proportion` |
+| `datetime` | `min`, `max`, `range_days` |
+| `other` | `top`, `top_frequency`, `top_proportion` |
+
+Notes on these statistics:
+
+- **Numeric:** `std` is the sample standard deviation and needs at least 2 non-null values. `outliers_count` counts values below `q25 - 1.5 * iqr` or above `q75 + 1.5 * iqr`, and needs at least 5 non-null values. When there are no non-null values, `zeros_count` is `0`, `zeros_proportion` is `0.0`, and the other statistics are `None`.
+- **Categorical and other:** `top` is the most frequent value, with its count in `top_frequency` and its share of non-null values in `top_proportion`. These are `None` when there are no non-null values.
+- **Categorical lengths:** `min_length`, `max_length`, and `mean_length` are set only when every non-null value is a string. Otherwise they are `None`.
+- **Boolean:** `true_count` and `false_count` are `0` when there are no non-null values, and `true_proportion` is `None`.
+- **Datetime:** `min` and `max` are ISO 8601 strings. `range_days` is the time between them in days, including fractions.
+
+### How columns are classified
+
+bynat assigns each column a `kind`:
+
+| Kind | Columns |
+| --- | --- |
+| `boolean` | Boolean dtypes, including pandas `boolean`, and columns whose values are all booleans. |
+| `datetime` | Datetime dtypes, both naive and timezone-aware, and columns of date or datetime objects. |
+| `numeric` | Numeric dtypes, including pandas `Int64` and `Float64`, and columns of integers, floats, or decimals. |
+| `categorical` | pandas `Categorical`, the `string` dtype, and columns whose non-null values are all strings. |
+| `other` | Everything else, such as mixed types, arbitrary Python objects, and timedeltas. |
+
+Empty and all-null columns do not raise errors. When a column has no non-null values, its `kind` follows its dtype. An all-null `object` column becomes `other`.
+
+### How values are counted
+
+- **Missing values** are found with pandas `isna()`, so `None`, `NaN`, `NaT`, and `pd.NA` all count.
+- **Duplicate rows** are counted across the profiled columns, keeping the first copy of each row. Cells that hold lists or dicts are compared by value. An empty DataFrame, or one with no columns, has `0` duplicates.
+- **Distinct values** exclude nulls. Unhashable values, such as lists and dicts, are compared by value.
+- **Proportions** at the dataset and column level, and `zeros_proportion`, are `0.0` when the denominator is zero. `top_proportion` and `true_proportion` are `None` when there are no non-null values.
+
+---
 
 ## Caching
 
-### `CacheManager`
+Caching lets bynat remember results between runs instead of repeating slow lookups. Cleaning methods use it automatically. You can also use `CacheManager` directly.
 
-`CacheManager` stores each function's cache as rows in a SQLite database named `cache.sqlite3` under `cache_dir`. When `cache_dir` is omitted (here and in `BaseData`, `JsonFile`, and `CsvFile`), the `BYNAT_CACHE_DIR` environment variable is used if set, otherwise `Settings/Cache Data/Automated`. Relative cache paths are resolved from the current working directory; `~` and environment variables are expanded. The cache directory and database are created lazily: constructing a manager creates neither, and the SQLite backend is created on first cache access or on the first save of in-memory changes. Legacy `<func_name>_cache.json` files, if present, are read only for a one-time migration into SQLite.
+`bynat.caching` provides:
+
+- `CacheManager`
+- `shared_cache_manager`
+- `CACHE_DIR_ENV_VAR`
+- `DEFAULT_CACHE_DIR`
+
+Methods that translate, geocode, extract entities, or look up exchange rates use one shared `CacheManager` per cache directory. That is the `BYNAT_CACHE_DIR` directory or the default, unless `df.bynat.with_cache(...)` selects another directory or an explicit `CacheManager`.
+
+### Where the cache is stored
+
+`CacheManager` stores each function's cache as rows in a SQLite database.
+
+- The database file is named `cache.sqlite3` and lives under `cache_dir`.
+- If `cache_dir` is omitted (here or in `BaseData`, `JsonFile`, and `CsvFile`), bynat uses the `BYNAT_CACHE_DIR` environment variable when set. Otherwise it uses `Settings/Cache Data/Automated`.
+- Relative cache paths are resolved from the current working directory. `~` and environment variables are expanded.
+- The directory and database are created lazily. Constructing a manager creates neither. The SQLite backend is created on first cache access or on the first save of in-memory changes.
+
+### Using CacheManager directly
 
 ```python
 from pathlib import Path
@@ -91,57 +492,47 @@ loaded = cache.load_function_cache("translate_categorical_column")
 assert loaded["status"]["pending"] == "Pending"
 ```
 
-Cache keys must be non-empty strings and cannot contain path separators. Values are JSON-serialized inside SQLite rows, so supported values stay JSON-compatible: strings, numbers, `None`, lists, and dictionaries. `save_function_cache` applies the added, changed, and removed entries in one SQLite transaction; serialization, locking, or commit failures are logged rather than raised, committed rows stay intact, and the pending in-memory changes are kept so the next save retries them. A legacy `<func_name>_cache.json` file is migrated into SQLite at most once: existing SQLite values take precedence over stale JSON, malformed or non-object files are quarantined to a `.corrupt` name for manual recovery, and unsupported nested structures are left in place, unmarked, for recovery.
+### Cache rules
 
-### CacheManager methods and parameters
+- Cache keys must be non-empty strings and cannot contain path separators.
+- Values are stored as JSON inside SQLite rows, so use JSON-compatible values: strings, numbers, `None`, lists, and dictionaries.
 
-| Method | Parameters | Behavior |
+### Saving and failures
+
+`save_function_cache` writes added, changed, and removed entries in one SQLite transaction. If serialization, locking, or the commit fails:
+
+- The failure is logged, not raised.
+- Rows that were already committed stay intact.
+- The pending in-memory changes are kept, and the next save retries them.
+
+### Migrating legacy JSON caches
+
+Older versions stored one `<func_name>_cache.json` file per function. If such a file exists, it is read only to migrate it into SQLite, at most once:
+
+- Existing SQLite values take precedence over stale JSON values.
+- Malformed or non-object files are renamed with a `.corrupt` suffix so you can recover them by hand.
+- Unsupported nested structures are left in place, unmarked, for manual recovery.
+
+### CacheManager reference
+
+| Method | Parameters | What it does |
 | --- | --- | --- |
-| `load_function_cache(func_name)` | `func_name: str` | Return the function's in-memory cache loaded from SQLite, creating the backend on first access; any legacy JSON is migrated once, and a function with no entries returns an empty dictionary. |
-| `get_column_cache(func_name, col_name)` | `func_name: str`, `col_name: str` | Return or create the ordinary mutable nested dictionary under `col_name`. |
-| `save_function_cache(func_name)` | `func_name: str` | Write the added, changed, and removed entries to SQLite in one transaction; log failures without raising and keep pending changes for retry. |
-| `delete_column_cache(func_name, col_name)` | `func_name: str`, `col_name: str` | Delete a nested bucket and save; the deletion removes only rows the manager already knew about, preserving concurrent additions and unrelated buckets or functions. Logs an `INFO` message when the bucket is absent or deleted. |
+| `load_function_cache(func_name)` | `func_name: str` | Returns the function's in-memory cache, loaded from SQLite. Creates the backend on first access and migrates any legacy JSON once. Returns an empty dictionary if the function has no entries. |
+| `get_column_cache(func_name, col_name)` | `func_name: str`, `col_name: str` | Returns the mutable nested dictionary under `col_name`, creating it if needed. |
+| `save_function_cache(func_name)` | `func_name: str` | Writes added, changed, and removed entries to SQLite in one transaction. Logs failures without raising and keeps pending changes for retry. |
+| `delete_column_cache(func_name, col_name)` | `func_name: str`, `col_name: str` | Deletes a nested bucket and saves. It removes only rows the manager already knew about, so concurrent additions and unrelated buckets or functions are preserved. Logs an `INFO` message whether the bucket was absent or deleted. |
 
-`_validate_cache_key` and `_get_file_path` are implementation helpers and are not part of the public API.
+`_validate_cache_key` and `_get_file_path` are implementation helpers and not part of the public API.
 
-## Cleaning
+---
 
-The class-based API remains first-class: instantiate `BaseData(data)`, `JsonFile`, or `CsvFile` and call the cleaning methods directly. After `import bynat`, every `pandas.DataFrame` also has the optional `bynat` accessor for the same cleaning operations. Accessor methods return new DataFrames and do not accept `inplace`; class methods return a new object by default, while supported `inplace=True` calls mutate the original object and return `None` (or the documented statistics result). Methods that perform translation, geocoding, NLP extraction, or exchange-rate lookup use one shared `CacheManager` per cache directory: the `BYNAT_CACHE_DIR` directory or the default, unless `df.bynat.with_cache(...)` selects another directory or an explicit `CacheManager`.
+## Advanced features
 
-### Practical examples
+### Hierarchical statistics
 
-Basic column cleaning and reshaping:
+Hierarchical statistics give you a typical value for each group at several levels of detail at once, for example per country and job title, then per country. bynat computes one statistic per group at every level of the hierarchy, from the full hierarchy down to its first column.
 
-```python
-import bynat
-import pandas as pd
-
-records = pd.DataFrame({
-    "user.display_name": ["Ada", "Grace"],
-    "user_id": [1, 2],
-    "description": ["Blue shoes", "Red shirt"],
-})
-
-cleaned = records.bynat.rename_all_DOTS().bynat.drop_by_substring("user")
-
-labeled = records.bynat.extract_keywords(
-    "description",
-    colors=["blue", "red"],
-)
-```
-
-Load files with the loader helpers, which return plain DataFrames:
-
-```python
-import bynat
-
-from_csv = bynat.read_csv("input.csv", sep=";")
-from_json = bynat.read_json("input.json", key="items")
-
-from_csv.bynat.save_to_json("output.json", orient="records")
-```
-
-Hierarchical statistics compute one statistic per group at every level of a hierarchy, from the full hierarchy down to its first column. Pass one strategy or a list of `median`, `mean`, and `mode` (`mod` is accepted as an alias):
+Pass one strategy or a list: `median`, `mean`, and `mode` (`mod` is accepted as an alias).
 
 ```python
 import bynat
@@ -160,7 +551,16 @@ stats = salaries.bynat.get_hierarchical_stats(
 )
 ```
 
-`stats` is returned as the caller's class (here `pandas.DataFrame`) with the columns `hierarchy_level`, `hierarchy_columns`, `group_key`, `target_column`, `strategy`, and `statistic`. The median rows are:
+`stats` is returned as the caller's class (here `pandas.DataFrame`) with these columns:
+
+- `hierarchy_level`
+- `hierarchy_columns`
+- `group_key`
+- `target_column`
+- `strategy`
+- `statistic`
+
+The median rows are:
 
 | hierarchy_level | group_key | strategy | statistic |
 | --- | --- | --- | --- |
@@ -170,7 +570,17 @@ stats = salaries.bynat.get_hierarchical_stats(
 | 1 | `("EG",)` | median | 14.0 |
 | 1 | `("US",)` | median | 80.0 |
 
-`group_key` is always a tuple with one value per hierarchy column, including single-column levels such as `("EG",)`. Null group keys are kept. `mean` and `median` need numeric targets and raise pandas' `TypeError` otherwise; `mode` works for any hashable values and breaks ties by first occurrence. Choose another container with `output_type`:
+Details:
+
+- `group_key` is always a tuple with one value per hierarchy column, including single-column levels such as `("EG",)`.
+- Null group keys are kept.
+- `mean` and `median` need numeric targets and raise pandas' `TypeError` otherwise.
+- `mode` works for any hashable values and breaks ties by first occurrence.
+- Target columns cannot also be hierarchy columns.
+
+#### Choosing the output type
+
+Use `output_type` to choose the result container:
 
 ```python
 as_frame = salaries.bynat.get_hierarchical_stats("salary", hierarchy_cols="country", output_type=pd.DataFrame)
@@ -178,128 +588,284 @@ as_dict = salaries.bynat.get_hierarchical_stats("salary", hierarchy_cols="countr
 # as_dict["group_key"] == [("EG",), ("US",)]; as_dict["statistic"] == [14.0, 80.0]
 ```
 
-`output_type` accepts `None` (default, the caller's class), `pandas.DataFrame`, `dict` (column name to list of values), or a `BaseData` subclass. Target columns cannot also be hierarchy columns.
+`output_type` accepts:
 
-Network-backed enrichment is explicit in the method behavior and should be used with an appropriate cache directory and service credentials/configuration where applicable:
+- `None` (default): the caller's class
+- `pandas.DataFrame`
+- `dict`: column name to list of values
+- A `BaseData` subclass
+
+### Enrichment with external services
+
+Translation, geocoding, and currency conversion call external services, so use an appropriate cache directory and any service credentials or configuration that apply.
 
 ```python
-translated = records.bynat.with_cache(".cache/bynat").translate_categorical_column(
+import bynat
+import pandas as pd
+
+products = pd.DataFrame({"category": ["حذاء", "قميص", "حذاء"]})
+
+translated = products.bynat.with_cache(".cache/bynat").translate_categorical_column(
     "category",
     target_lang="en",
     save_every=100,
 )
 ```
 
-### External-service providers
+#### Providers
 
-Translation, geocoding, and currency conversion call external services through small provider protocols in `bynat.cleaning.enrich`. The defaults are used unless a method receives `provider=`:
+These services are accessed through small provider protocols in `bynat.cleaning.enrich`. bynat uses a default provider unless a method receives `provider=`.
 
-| Protocol | Method a provider defines | Default | Accepted by |
+| Protocol | Method a provider defines | Default provider | Accepted by |
 | --- | --- | --- | --- |
 | `Translator` | `translate(text, target_lang) -> str \| None`, optionally `translate_batch(texts, target_lang) -> list` | `GoogleTranslatorProvider` (`deep-translator`) | `translate_categorical_column`, `translate_conditional_column` |
 | `Geocoder` | `geocode(query) -> (latitude, longitude) \| None` | `NominatimGeocoder` (`geopy`, one request per second) | `fill_missing_coordinates` |
 | `RateSource` | `yearly_rates(currency, start_year, end_year) -> {year: rate}` | `YFinanceRateSource` (`yfinance`) | `convert_to_usd` |
 
-A provider is any object with the right method; no subclassing or monkeypatching is needed:
+A provider is any object with the right method. No subclassing or monkeypatching is needed:
 
 ```python
+import bynat
+import pandas as pd
+
 class UpperTranslator:
     def translate(self, text, target_lang):
         return text.upper()
 
-df.bynat.translate_categorical_column("status", provider=UpperTranslator())
+df = pd.DataFrame({"status": ["pending", "done", "pending"]})
+
+df = df.bynat.translate_categorical_column("status", provider=UpperTranslator())
 ```
 
-Translators with `translate_batch` receive the values in chunks of `save_every`. Otherwise `translate` runs in a thread pool sized by the provider's optional `max_workers` attribute (default 1), with request starts spaced by its optional `min_interval` attribute in seconds (default 0). `GoogleTranslatorProvider` uses four workers and at most five requests per second. A falsy translation or a raised exception leaves that value untranslated and uncached. `convert_to_usd` makes one `yearly_rates` call per currency, covering every year its look-back can need.
+#### How translation providers are called
 
-All four cached methods, and `extract_entities_nlp`, run through one engine: unique non-null values are looked up in the cache, the misses are fetched, the cache is checkpointed every `save_every` values, and failures are logged and left uncached so the next run retries them.
+- If the translator has `translate_batch`, it receives values in chunks of `save_every`.
+- Otherwise `translate` runs in a thread pool. Its size comes from the provider's optional `max_workers` attribute (default 1). Request starts are spaced by its optional `min_interval` attribute, in seconds (default 0).
+- `GoogleTranslatorProvider` uses four workers and at most five requests per second.
+- If a translation is falsy or raises an exception, that value stays untranslated and is not cached.
 
-### Class-based API
+#### How currency rates are fetched
 
-`BaseData`, `JsonFile`, and `CsvFile` are supported public classes. `BaseData` is a supported `pandas.DataFrame` subclass, and all three use the same cleaning implementations as the optional accessor.
+`convert_to_usd` makes one `yearly_rates` call per currency. The call covers every year the look-back might need.
 
-| Class | Constructor parameters | Equivalent accessor / function form |
+#### The shared lookup engine
+
+The four cached enrichment methods and `extract_entities_nlp` all run through one engine:
+
+1. Unique non-null values are looked up in the cache.
+2. Cache misses are fetched.
+3. The cache is checkpointed every `save_every` values.
+4. Failures are logged and left uncached, so the next run retries them.
+
+---
+
+## Cleaning method reference
+
+The accessor and the supported classes expose the same cleaning methods.
+
+- Accessor methods take no `inplace` argument.
+- Class methods accept `inplace` where in-place operation is meaningful.
+- `get_hierarchical_stats` and `profile` return statistics or reports and have no in-place mode.
+
+> **Always use the method's return value.** Most methods skip missing source or target columns with a logged warning and return an unchanged copy. Invalid arguments that would otherwise give silently wrong results raise instead: an unknown `strategy`, an empty `file_path`, invalid `save_to_sql` connection settings, or an unusable `extract_entities_nlp` configuration.
+
+Methods are grouped by the kind of job they do:
+
+- [Columns](#columns)
+- [Text and language](#text-and-language)
+- [Enrichment](#enrichment)
+- [Outliers, missing values, and statistics](#outliers-missing-values-and-statistics)
+- [Data profiling](#data-profiling-1)
+- [Saving data](#saving-data)
+- [Cache and object helpers](#cache-and-object-helpers)
+
+### Columns
+
+Rename, drop, reorder, and reshape columns.
+
+| Method | Parameters | Purpose |
 | --- | --- | --- |
-| `BaseData` | `data=None`, `cache_dir=None`, `*args`, `**kwargs` | `pandas.DataFrame(...)` with optional `df.bynat`; `df.bynat.with_cache(cache_dir)` for a cache directory |
-| `JsonFile` | `data=None`, `json_file_path=None`, `key=None`, `cache_dir=None`, `*args`, `**kwargs` | `bynat.read_json(json_file_path, key=None)` followed by optional `df.bynat` methods |
-| `CsvFile` | `data=None`, `csv_file_path=None`, `cache_dir=None`, `read_kwargs=None`, `*args`, `**kwargs` | `bynat.read_csv(csv_file_path, **read_kwargs)` followed by optional `df.bynat` methods |
+| `drop_by_substring` | `substring` | Drops every column whose name contains `substring`. |
+| `drop_CLASS_columns` | none | Drops columns containing the literal substring `__CLASS__`. |
+| `rename_by_substring` | `old_substring`, `new_substring` | Replaces occurrences of one substring in column names. |
+| `rename_all_DOTS` | `unified_separator="_"` | Replaces dots in all matching column names. |
+| `reorder_columns` | `*first_cols` | Moves the named columns to the front and keeps the order of the others. Pass column names as positional arguments. |
+| `move_column` | `col_to_move`, `col_target`, `position="after"` | Moves one column before or after another. `position` must be `"before"` or `"after"`. |
+| `align_lat_lng` | none | Moves the exact, case-sensitive `longitude` column right after `latitude`. |
+| `melt_transform_pivot` | `id_vars`, `value_vars=None`, `transform_func=None`, `aggfunc="first"`, `var_name="variable_name"`, `value_name="variable_value"`, `pivot_index=None`, `pivot_columns=None`, `**kwargs` | Melts selected columns, optionally transforms the melted values, and pivots back. `transform_func` must return the same number of values it receives. |
+| `split_list_objects` | `source_col`, `remove_source_col=False`, `explode_rows=False`, `cartesian_explode=False`, `**target_cols_and_indices` | Extracts list elements by integer index, joins selected values, or explodes extracted lists in parallel or cartesian mode. Exploding rows changes the row count and resets the index. |
 
-Equivalent class-based and accessor styles:
+### Text and language
 
-```python
-# Class-based style
-from bynat.cleaning import JsonFile
-jobs = JsonFile(json_file_path="jobs.json", key="items", cache_dir="cache")
-jobs = jobs.rename_all_DOTS()
-jobs.translate_categorical_column("status", inplace=True)
-
-# Optional accessor style
-import bynat
-jobs = bynat.read_json("jobs.json", key="items")
-jobs = jobs.bynat.rename_all_DOTS()
-jobs = jobs.bynat.with_cache("cache").translate_categorical_column("status")
-```
-
-Every supported `BaseData` method below also accepts `inplace=False` where in-place operation is meaningful. With `inplace=True`, the method mutates the original object and returns `None` (or the documented statistics result); it is supported and is not scheduled for removal. Without it, every method returns a new object, including early exits that previously returned the original object itself. `BaseData` creates its `CacheManager` on first use and shares it with every frame pandas derives from it.
-
-### Methods and parameters
-
-The optional accessor and the supported classes expose the same cleaning methods. Accessor methods take no `inplace` argument; class methods accept it where in-place operation is meaningful. The statistics-only `get_hierarchical_stats` method returns statistics and does not expose an in-place mode.
-
-| Method | Parameters | Purpose and important behavior |
+| Method | Parameters | Purpose |
 | --- | --- | --- |
-| `with_cache` (accessor only) | `cache` | Return an accessor that caches in another directory or `CacheManager`. |
-| `clear_cache_for_column` | `func_name`, `target_col` | Delete one cache bucket through the attached `CacheManager`. |
-| `view` (`BaseData` only) | none | Return a plain `pandas.DataFrame` view/copy of the object. |
-| `drop_by_substring` | `substring` | Drop every column whose name contains `substring`. |
-| `drop_CLASS_columns` | none | Drop columns containing the literal substring `__CLASS__`. |
-| `rename_by_substring` | `old_substring`, `new_substring` | Replace occurrences of one substring in column names. |
-| `rename_all_DOTS` | `unified_separator="_"` | Replace dots in all matching column names. |
-| `reorder_columns` | `*first_cols` | Move the named columns to the front while preserving the order of other columns. Pass column names as positional arguments. |
-| `melt_transform_pivot` | `id_vars`, `value_vars=None`, `transform_func=None`, `aggfunc="first"`, `var_name="variable_name"`, `value_name="variable_value"`, `pivot_index=None`, `pivot_columns=None`, `**kwargs` | Melt selected columns, optionally transform the melted value series, and pivot back. `transform_func` must return the same number of values. |
-| `move_column` | `col_to_move`, `col_target`, `position="after"` | Move one column before or after another. `position` must be `"before"` or `"after"`. |
-| `align_lat_lng` | none | Move exact, case-sensitive `longitude` immediately after `latitude`. |
-| `extract_keywords` | `*source_cols`, `remove_extracted=False`, `use_regex=False`, `**target_cols_and_keywords` | Search combined source text and write matched keywords/regex results to named target columns. Literal matches are case-insensitive and title-cased; keyword lists are passed as keyword arguments. Each unique text is matched once with a single combined pattern (Aho-Corasick for ASCII text when `pyahocorasick` is installed). |
-| `split_list_objects` | `source_col`, `remove_source_col=False`, `explode_rows=False`, `cartesian_explode=False`, `**target_cols_and_indices` | Extract list elements by integer index, join selected values, or explode extracted lists in parallel/cartesian mode. Exploding rows changes the row count and resets the index. |
-| `impute_by_language` | `reference_col`, `*target_cols`, `target_lang="en"` | Choose existing values by exact normalized match or language detection, then fall back to title-cased reference values. Uses deterministic `langdetect` seeding. |
-| `translate_conditional_column` | `partition_col`, `detect_col`, `target_col`, `target_lang="en"`, `sample_size=10`, `number_of_samples=3`, `threshold=0.5`, `save_every=1000` | Sample each partition for language detection and translate target values for partitions below the threshold. Partitions are processed with one `groupby`; sampling is reproducible for a given `random_state` (pass `None` for unseeded sampling). Uses the translation provider and cached results. |
-| `translate_categorical_column` | `target_col`, `target_lang="en"`, `save_every=1000`, `provider=None` | Translate each unique non-null category once, cache results, and map them back. Uses the translation provider. |
-| `truncate_after_substring` | `regex=True`, `**target_cols_and_substrings` | Split named columns at one or more substring/regex delimiters and keep the text before the first delimiter. |
-| `fill_missing_coordinates` | `*fallback_cols`, keyword-only `lat_col`, `long_col`, `save_every=1000`, `user_agent="data_cleaning_core_geocoder"`, `retry_not_found=False`, `provider=None` | Build location queries from fallback columns and geocode missing coordinates with `geopy`/Nominatim. A failed query is retried with its leftmost part dropped (`"street, city, country"` → `"city, country"` → `"country"`). Results and not-found queries are cached; pass `retry_not_found=True` to re-query misses. Set `user_agent` to identify your application, as Nominatim's usage policy requires. |
-| `convert_to_usd` | `*target_cols`, keyword-only `country_col`, `year_col`, `new_cols=True`, `round_decimals=None`, `provider=None` | Infer country currencies with `pycountry`, fetch yearly mean rates through the rate provider (Yahoo Finance by default) with one download per currency (looking back to earlier years when a year has no data), cache lookups, and divide target values by the rate. Unknown countries and past years without data are cached as misses; network errors are not cached. |
-| `handle_outliers` | `*target_cols`, keyword-only `hierarchy_cols`, `min_samples=5`, `get_hierarchical_stats=False` | Replace hierarchical-IQR outliers with `NaN`, progressively relaxing the grouping hierarchy. When enabled, return `(result, stats)` with the original-data hierarchical median statistics. |
-| `drop_outliers` | `*target_cols`, keyword-only `hierarchy_cols`, `min_samples=5`, `get_hierarchical_stats=False` | Drop rows containing hierarchical-IQR outliers. Rows are dropped by position, so duplicated index labels are safe. When enabled, return `(result, stats)` with the original-data hierarchical median statistics. |
-| `fill_missing` | `*target_cols`, `strategy="median"`, `hierarchy_cols=None`, `get_hierarchical_stats=False` | Fill missing values progressively through a grouping hierarchy using `median`, `mean`, `mode`, or the accepted alias `mod`. When enabled, return `(result, stats)` with statistics for the requested strategy computed before imputation. |
-| `get_hierarchical_stats` | `*target_cols`, `strategy="median"`, `hierarchy_cols=None`, `output_type=None` | Return one statistic row per group, hierarchy level, target, and strategy. See the example above for the output schema and `output_type` values. |
-| `categorize_by_reference` | `*source_cols`, keyword-only `target_col`, `reference`, `default_category="Other"` | Search combined text with an Aho-Corasick automaton and assign the longest matching reference keyword's category. |
-| `extract_entities_nlp` | `*source_cols`, keyword-only `lexicon_source`, `spacy_model="en_core_web_sm"`, `exclude_pos=None`, `disable=("parser", "ner")`, `save_every=1000`, `noisy_terms=None`, `**target_cols_and_json_keys` | Load lexicon data from JSON or a dictionary, process text with spaCy, cache entity lists per target/model/pipeline configuration, and write them to target columns. `disable` accepts None, one component name, or an iterable; required lemmatization components are rejected and unknown names warn. The misspelled `noisey_terms` name remains a separate deprecated compatibility alias. |
-| `save_to_json` | `file_path`, `orient="records"`, `append=False`, `force_ascii=False`, `indent=4` | Write JSON only when changed, or append/deduplicate existing JSON rows. Rows with list or dictionary values are deduplicated by their JSON content. Datetime columns are formatted as `%Y-%m-%d %H:%M:%S`. |
-| `save_to_sql` | `table_name`, `database_type`, `database_user`, `database_password`, `database_host`, `database_port`, `database_name`, `database_driver=None`, `columns_types=None`, `chunk_size=None`, `fast_executemany=False`, `if_exists="append"`, `index=False` | Build a SQLAlchemy connection URL and write the frame with `DataFrame.to_sql`. SQLite uses `database_name` as a path; SQL Server requires `database_driver`. |
+| `extract_keywords` | `*source_cols`, `remove_extracted=False`, `use_regex=False`, `**target_cols_and_keywords` | Searches the combined source text and writes matched keywords or regex results to named target columns. |
+| `truncate_after_substring` | `regex=True`, `**target_cols_and_substrings` | Splits named columns at one or more substring or regex delimiters and keeps the text before the first delimiter. |
+| `categorize_by_reference` | `*source_cols`, keyword-only `target_col`, `reference`, `default_category="Other"` | Searches the combined text with an Aho-Corasick automaton and assigns the category of the longest matching reference keyword. |
+| `impute_by_language` | `reference_col`, `*target_cols`, `target_lang="en"` | Picks existing values by exact normalized match or language detection, then falls back to title-cased reference values. Uses deterministic `langdetect` seeding. |
 
-Most methods skip missing source/target columns with a logged warning and return an unchanged copy. Always use the method's return value. Invalid arguments that would otherwise produce silently wrong results raise instead: an unknown `strategy`, an empty `file_path`, invalid `save_to_sql` connection settings, or an unusable `extract_entities_nlp` configuration.
+Notes on `extract_keywords`:
 
-For `handle_outliers`, `drop_outliers`, and `fill_missing`, passing `get_hierarchical_stats=True` reuses `get_hierarchical_stats()` and computes the statistics from the original data before the cleaning operation changes values or rows. The return value is `(result, stats)`; with `inplace=True`, the operation mutates the original object and returns `stats` directly. The outlier methods use the default hierarchical `median` statistic; `fill_missing` uses its requested `strategy`.
+- Keyword lists are passed as keyword arguments, one per target column.
+- Literal matches are case-insensitive and title-cased.
+- Each unique text is matched once, with a single combined pattern. For ASCII text, Aho-Corasick is used when `pyahocorasick` is installed.
+
+### Enrichment
+
+Translation, geocoding, currency conversion, and NLP. See [Enrichment with external services](#enrichment-with-external-services) for providers and the shared lookup engine.
+
+| Method | Parameters | Purpose |
+| --- | --- | --- |
+| `translate_categorical_column` | `target_col`, `target_lang="en"`, `save_every=1000`, `provider=None` | Translates each unique non-null category once, caches the results, and maps them back. |
+| `translate_conditional_column` | `partition_col`, `detect_col`, `target_col`, `target_lang="en"`, `sample_size=10`, `number_of_samples=3`, `threshold=0.5`, `save_every=1000`, `random_state=0`, `provider=None` | Samples each partition for language detection and translates the target values of partitions below the threshold. |
+| `fill_missing_coordinates` | `*fallback_cols`, keyword-only `lat_col`, `long_col`, `save_every=1000`, `user_agent="data_cleaning_core_geocoder"`, `retry_not_found=False`, `provider=None` | Builds location queries from the fallback columns and geocodes missing coordinates with `geopy` and Nominatim. |
+| `convert_to_usd` | `*target_cols`, keyword-only `country_col`, `year_col`, `new_cols=True`, `round_decimals=None`, `provider=None` | Infers each country's currency with `pycountry`, fetches yearly mean exchange rates, and divides the target values by the rate. |
+| `extract_entities_nlp` | `*source_cols`, keyword-only `lexicon_source`, `spacy_model="en_core_web_sm"`, `exclude_pos=None`, `disable=("parser", "ner")`, `save_every=1000`, `noisy_terms=None`, `**target_cols_and_json_keys` | Loads lexicon data, processes text with spaCy, and writes entity lists to the target columns. |
+
+#### `translate_conditional_column`
+
+- Uses the translation provider and cached results.
+- Partitions are processed with a single `groupby`.
+- Sampling is reproducible for a given `random_state`. Pass `None` for unseeded sampling.
+- `random_state` accepts an integer seed or a NumPy `Generator` or `RandomState`. One generator is drawn from for every sample, so repeated samples differ, while repeated calls with the same seed give the same results.
+
+#### `fill_missing_coordinates`
+
+- A failed query is retried with its leftmost part dropped: `"street, city, country"` → `"city, country"` → `"country"`.
+- Results and not-found queries are cached. Pass `retry_not_found=True` to query the misses again.
+- Set `user_agent` to identify your application, as Nominatim's usage policy requires.
+
+#### `convert_to_usd`
+
+- Rates come from the rate provider (Yahoo Finance by default), with one download per currency.
+- If a year has no data, bynat looks back to earlier years.
+- Lookups are cached. Unknown countries and past years without data are cached as misses. Network errors are not cached.
+
+#### `extract_entities_nlp`
+
+- Entity lists are cached per target, model, and pipeline configuration.
+- `disable` accepts `None`, one component name, or an iterable. Components required for lemmatization are rejected, and unknown names produce a warning.
+- The misspelled `noisey_terms` name remains as a separate, deprecated compatibility alias for `noisy_terms`.
+
+### Outliers, missing values, and statistics
+
+| Method | Parameters | Purpose |
+| --- | --- | --- |
+| `handle_outliers` | `*target_cols`, keyword-only `hierarchy_cols`, `min_samples=5`, `get_hierarchical_stats=False` | Replaces hierarchical-IQR outliers with `NaN`, relaxing the grouping hierarchy step by step. |
+| `drop_outliers` | `*target_cols`, keyword-only `hierarchy_cols`, `min_samples=5`, `get_hierarchical_stats=False` | Drops rows that contain hierarchical-IQR outliers. Rows are dropped by position, so duplicated index labels are safe. |
+| `fill_missing` | `*target_cols`, `strategy="median"`, `hierarchy_cols=None`, `get_hierarchical_stats=False` | Fills missing values step by step through a grouping hierarchy, using `median`, `mean`, `mode`, or the alias `mod`. |
+| `get_hierarchical_stats` | `*target_cols`, `strategy="median"`, `hierarchy_cols=None`, `output_type=None` | Returns one statistic row per group, hierarchy level, target, and strategy. See [Hierarchical statistics](#hierarchical-statistics) for the output schema and `output_type` values. |
+
+#### Returning statistics from cleaning methods
+
+For `handle_outliers`, `drop_outliers`, and `fill_missing`, passing `get_hierarchical_stats=True` reuses `get_hierarchical_stats()`. The statistics are computed from the original data, before the operation changes any values or rows.
+
+- The return value is `(result, stats)`.
+- With `inplace=True`, the operation changes the original object and returns `stats` directly.
+- The outlier methods use the default hierarchical `median` statistic. `fill_missing` uses its requested `strategy`.
+
+### Data profiling
+
+| Method | Parameters | Purpose |
+| --- | --- | --- |
+| `profile` | `*columns`, keyword-only `output_type=None` | Returns a read-only data quality report for all columns or the ones you name. See [Data profiling](#data-profiling) for the report structure and `output_type` values. |
+
+### Saving data
+
+| Method | Parameters | Purpose |
+| --- | --- | --- |
+| `save_to_json` | `file_path`, `orient="records"`, `append=False`, `force_ascii=False`, `indent=4` | Writes JSON only when the content changed, or appends to and deduplicates existing JSON rows. |
+| `save_to_sql` | `table_name`, `database_type`, `database_user`, `database_password`, `database_host`, `database_port`, `database_name`, `database_driver=None`, `columns_types=None`, `chunk_size=None`, `fast_executemany=False`, `if_exists="append"`, `index=False` | Builds a SQLAlchemy connection URL and writes the frame with `DataFrame.to_sql`. |
+
+Notes:
+
+- `save_to_json` deduplicates rows with list or dictionary values by their JSON content. Datetime columns are formatted as `%Y-%m-%d %H:%M:%S`.
+- `save_to_sql` uses `database_name` as a file path for SQLite. SQL Server requires `database_driver`.
+
+### Cache and object helpers
+
+| Method | Parameters | Purpose |
+| --- | --- | --- |
+| `with_cache` (accessor only) | `cache` | Returns an accessor that caches in another directory or `CacheManager`. |
+| `clear_cache_for_column` | `func_name`, `target_col` | Deletes one cache bucket through the attached `CacheManager`. |
+| `view` (`BaseData` only) | none | Returns a plain `pandas.DataFrame` view or copy of the object. |
+
+---
+
+## Module layout
+
+Use this table to find where things live if you want to read the source or import something specific.
+
+| Module | Purpose | Contents |
+| --- | --- | --- |
+| `bynat.caching.manager` | Remembering results | `CacheManager` and `shared_cache_manager` |
+| `bynat.cleaning.columns` | Tidying and reshaping columns | Column renaming, dropping, reordering, moving, `melt_transform_pivot`, `split_list_objects` |
+| `bynat.cleaning.text` | Working with text | `extract_keywords`, `truncate_after_substring`, `categorize_by_reference` |
+| `bynat.cleaning.stats` | Outliers, gaps, and group statistics | `handle_outliers`, `drop_outliers`, `fill_missing`, `get_hierarchical_stats` |
+| `bynat.cleaning.profile` | Data quality profiling | `profile`, `ProfileReport`, `DatasetProfile`, `ColumnProfile` |
+| `bynat.cleaning.enrich` | Adding information from outside the table | `translate`, `geocode`, `currency`, `nlp`, the shared cached-lookup `engine`, and `providers` |
+| `bynat.cleaning.io` | Reading and writing | `save_to_json`, `save_to_sql`, `read_json`, `read_csv` |
+| `bynat.cleaning.accessor` | The `df.bynat` entry point | The `df.bynat` accessor |
+| `bynat.cleaning.base` | The class-based API | `BaseData`, `JsonFile`, `CsvFile` |
+
+The legacy module paths `bynat.caching.Caching` and `bynat.cleaning.Cleaning` still import. They resolve to `bynat.caching.manager` and `bynat.cleaning.base`.
+
+---
 
 ## Limitations and operational notes
 
-- Optional integrations are lazy-loaded, so basic `bynat.cleaning` imports and core dataframe methods work with only `numpy` and `pandas`. Methods that need an absent integration raise a clear `ImportError` when called.
-- Translation uses `deep-translator` by default and may make external requests. Geocoding uses Nominatim through `geopy` with a one-second rate limit. Currency conversion uses Yahoo Finance history through `yfinance`. These services can fail, rate-limit, or change results; cached values persist locally in SQLite.
-- NLP extraction requires a compatible spaCy model installed separately. `extract_entities_nlp(disable=...)` accepts None, a component name, or an iterable, defaults to disabling `parser` and `ner`, rejects components required for lemmatization, and warns before continuing when a requested component is not in the loaded pipeline. A missing or unloadable model raises spaCy's `OSError`.
-- `save_to_sql` lets database exceptions propagate to the caller and always disposes its engine. It receives database credentials as ordinary arguments; do not hard-code secrets in application code.
-- Cache entries live in a single SQLite database rather than one JSON file per function. Saves run inside SQLite transactions and WAL checkpoints, so an interrupted or failed save is logged and rolled back without raising; rows from earlier successful saves stay intact and the pending in-memory changes are retried on the next save. Concurrent managers sharing one database merge disjoint key updates, and for a key written by more than one manager the last committed write wins. Values must be JSON serializable.
-- Messages go through the standard `logging` module under the `bynat` logger. Skipped columns and failed lookups are `WARNING`s and appear on stderr by default; progress and checkpoints are `INFO`. To see progress, or to silence warnings:
+Read these before you rely on bynat in a pipeline.
 
-  ```python
-  import logging
+### Optional integrations
 
-  logging.basicConfig(level=logging.INFO)              # show progress
-  logging.getLogger("bynat").setLevel(logging.ERROR)   # or hide warnings
-  ```
-- The top-level `bynat` namespace exposes only `read_json`, `read_csv`, and `BynatAccessor`; import the supported class API from `bynat.cleaning` (for example, `from bynat.cleaning import BaseData`).
+Optional integrations are lazy-loaded, so basic `bynat.cleaning` imports and core DataFrame methods work with only `numpy` and `pandas`. A method that needs an absent integration raises a clear `ImportError` when called.
+
+### External services
+
+- Translation uses `deep-translator` by default and may make external requests.
+- Geocoding uses Nominatim through `geopy`, with a one-second rate limit.
+- Currency conversion uses Yahoo Finance history through `yfinance`.
+
+These services can fail, rate-limit requests, or change their results. Cached values persist locally in SQLite.
+
+### NLP extraction
+
+- `extract_entities_nlp` needs a compatible spaCy model installed separately.
+- `disable=...` accepts `None`, a component name, or an iterable. It defaults to disabling `parser` and `ner`, and rejects components required for lemmatization.
+- If a requested component is not in the loaded pipeline, bynat warns and continues.
+- A missing or unloadable model raises spaCy's `OSError`.
+
+### SQL
+
+- `save_to_sql` lets database exceptions propagate to the caller and always disposes its engine.
+- It receives database credentials as ordinary arguments. Do not hard-code secrets in application code.
+
+### Cache behavior
+
+- Cache entries live in a single SQLite database, not one JSON file per function.
+- Saves run inside SQLite transactions and WAL checkpoints. A failed or interrupted save is logged and rolled back without raising. Rows from earlier successful saves stay intact, and pending in-memory changes are retried on the next save.
+- Concurrent managers sharing one database merge disjoint key updates. If more than one manager writes the same key, the last committed write wins.
+- Values must be JSON-serializable.
+
+### Logging
+
+Messages go through the standard `logging` module under the `bynat` logger:
+
+- Skipped columns and failed lookups are `WARNING` messages and appear on stderr by default.
+- Progress and checkpoints are `INFO` messages.
+
+```python
+import logging
+
+logging.basicConfig(level=logging.INFO)              # show progress
+logging.getLogger("bynat").setLevel(logging.ERROR)   # or hide warnings
+```
+
+---
 
 ## Development and verification
 
-The repository test suite uses `pytest` and avoids network access, secrets, user files, and external services. Network-backed integrations (translation, geocoding, exchange rates, spaCy) are exercised with fake modules:
+The test suite uses `pytest`. It avoids network access, secrets, user files, and external services. Network-backed integrations (translation, geocoding, exchange rates, spaCy) are tested with fake modules.
 
 ```bash
 python -m pip install -e ".[dev]"
@@ -309,13 +875,29 @@ ruff check bynat tests benchmarks
 python -m mypy
 ```
 
-Install `".[categorization,sql]"` to also run the tests that use the real `pyahocorasick` and SQLAlchemy/SQLite; they are skipped otherwise. CI runs the suite on Ubuntu and Windows with Python 3.11 and 3.13, plus Ruff, mypy, and an extras job.
+To also run the tests that use the real `pyahocorasick` and SQLAlchemy/SQLite, install `".[categorization,sql]"`. Those tests are skipped otherwise.
 
-Type checking is gradual. `python -m mypy` reads its scope from `[tool.mypy]` in `pyproject.toml`: the cache manager and the cleaning helper modules (`_common`, `accessor`, `columns`, `text`, `stats`, `io`, `enrich`), checked against `pandas-stubs`. The supported `BaseData` classes in `bynat/cleaning/base.py` remain a separate gradual-typing boundary. To bring a module into scope, add it to `files`, fix what mypy reports with precise annotations rather than `Any` or `# type: ignore`, and keep the runtime behavior unchanged.
+CI runs the suite on Ubuntu and Windows with Python 3.11 and 3.13, plus Ruff, mypy, and an extras job.
 
-`benchmarks/` holds timing scripts that compare the current implementations with the `0.3.0` algorithms; see `benchmarks/README.md`.
+### Type checking
+
+Type checking is gradual. `python -m mypy` reads its scope from `[tool.mypy]` in `pyproject.toml`. That scope covers the cache manager and the cleaning helper modules (`_common`, `accessor`, `columns`, `text`, `stats`, `io`, `profile`, `enrich`), checked against `pandas-stubs`. The supported classes in `bynat/cleaning/base.py` remain a separate gradual-typing boundary.
+
+To bring a module into scope:
+
+1. Add it to `files` in `[tool.mypy]`.
+2. Fix what mypy reports with precise annotations, not `Any` or `# type: ignore`.
+3. Keep the runtime behavior unchanged.
+
+### Benchmarks
+
+`benchmarks/` holds timing scripts that compare the current implementations with the `0.3.0` algorithms. See [`benchmarks/README.md`](benchmarks/README.md).
+
+### Building packages
 
 Building a wheel or source archive requires the configured setuptools build backend and wheel tooling.
+
+---
 
 ## License
 
